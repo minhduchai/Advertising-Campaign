@@ -1,0 +1,778 @@
+import {
+  buildAdParams,
+  buildCampaignParams,
+  buildConversationAdSetParams,
+  buildImageCreativeParams,
+  buildPublicPostCreativeParams,
+  buildVideoCreativeParams
+} from './draft.js';
+import { isMetaThrottleError } from './meta-client.js';
+
+const PUBLIC_POST_DEADLINE_CLEANUP_MS = 10_000;
+const TRANSIENT_CREATIVE_RETRY_DELAYS_MS = [5_000, 12_000];
+
+export async function publishDraft({
+  draft,
+  token,
+  runId,
+  ownerMetaUserId,
+  metaClient,
+  getMedia,
+  pagePublishingContexts = new Map(),
+  onNodeUpdate = () => {},
+  delay = defaultDelay,
+  deadlineAt = Number.POSITIVE_INFINITY,
+  now = Date.now,
+  signal,
+  existingNodes = [],
+  maxNewNodes = Number.POSITIVE_INFINITY,
+  stopStartingAt = Number.POSITIVE_INFINITY,
+  concurrency = 1,
+  onlyAdClientIds = null
+}) {
+  const deadlineContext = { deadlineAt, now, signal };
+  assertPublicationDeadline(deadlineContext);
+  const nodes = existingNodes.map((node) => ({ ...node }));
+  const creativeArtifacts = seedCreativeArtifacts(draft, nodes);
+  let newNodes = 0;
+  let bounded = false;
+  const canCreateNode = () => newNodes < maxNewNodes && now() < stopStartingAt;
+  // Cổng chung cho ad set + ad: tối đa `concurrency` node đang tạo trên Meta cùng lúc.
+  // Kiểm tra giới hạn batch ngay lúc bắt đầu tạo (không phải lúc xếp hàng).
+  const gate = createGate(concurrency);
+  // Tra permalink sau khi tạo ad là đọc Graph thuần: không giữ slot tạo, nhưng cũng bị chặn cùng mức song song.
+  const lookupGate = createGate(concurrency);
+  // Tối đa `concurrency` Campaign chạy cùng lúc; concurrency = 1 giữ nguyên thứ tự tuần tự cũ.
+  const campaignGate = createGate(concurrency);
+  const claim = (create) => gate(async () => {
+    if (!canCreateNode()) { bounded = true; return null; }
+    newNodes += 1;
+    return create();
+  });
+  const report = async (node) => {
+    const existingIndex = nodes.findIndex((entry) => entry.clientId === node.clientId);
+    if (existingIndex >= 0) {
+      nodes[existingIndex] = { ...nodes[existingIndex], ...node };
+    } else {
+      nodes.push(node);
+    }
+    await onNodeUpdate(runId, node);
+    return node;
+  };
+
+  await runAll(draft.campaigns, (campaign) => campaignGate(async () => {
+    let campaignResult = terminalNode(nodes, campaign.clientId);
+    if (!campaignResult) {
+      campaignResult = await claim(() => createNode({
+        report,
+        clientId: campaign.clientId,
+        name: campaign.name,
+        type: 'campaign',
+        deadlineContext,
+        create: () => metaClient.createCampaign(
+          token,
+          campaign.adAccountId,
+          buildCampaignParams(campaign),
+          publicationOptions(deadlineContext)
+        )
+      }));
+      if (!campaignResult) return;
+    }
+
+    if (!campaignResult.remoteId) {
+      await skipCampaignChildren(campaign, report, campaign.clientId, nodes);
+      return;
+    }
+
+    await runAll(campaign.adSets, async (adSet) => {
+      let adSetResult = terminalNode(nodes, adSet.clientId);
+      if (!adSetResult) {
+        adSetResult = await claim(() => createNode({
+          report,
+          clientId: adSet.clientId,
+          parentClientId: campaign.clientId,
+          name: adSet.name,
+          type: 'adSet',
+          deadlineContext,
+          create: () => metaClient.createAdSet(
+            token,
+            campaign.adAccountId,
+            buildConversationAdSetParams(campaignResult.remoteId, campaign, adSet),
+            publicationOptions(deadlineContext)
+          )
+        }));
+        if (!adSetResult) return;
+      }
+
+      if (!adSetResult.remoteId) {
+        await skipAds(adSet, report, adSet.clientId, nodes);
+        return;
+      }
+
+      await runAll(adSet.ads, async (ad) => {
+        if (onlyAdClientIds && !onlyAdClientIds.has(String(ad.clientId))) return;
+        if (terminalNode(nodes, ad.clientId)) return;
+        const lookupPublication = await claim(() => createAd({
+          ad,
+          adSetId: adSetResult.remoteId,
+          parentClientId: adSet.clientId,
+          accountId: campaign.adAccountId,
+          pageId: campaign.pageId,
+          token,
+          metaClient,
+          pagePublishingContexts,
+          getMedia,
+          ownerMetaUserId,
+          report,
+          delay,
+          deadlineContext,
+          creativeArtifacts
+        }));
+        await lookupPublication?.(lookupGate);
+      });
+    });
+  }));
+
+  await cleanupUnusedPublicPosts(creativeArtifacts, metaClient, report, deadlineContext);
+
+  return { id: runId, nodes, complete: !bounded && draftIsComplete(draft, nodes), attempted: newNodes };
+}
+
+async function createAd({
+  ad,
+  adSetId,
+  parentClientId,
+  accountId,
+  pageId,
+  token,
+  metaClient,
+  pagePublishingContexts,
+  getMedia,
+  ownerMetaUserId,
+  report,
+  delay,
+  deadlineContext,
+  creativeArtifacts
+}) {
+  assertPublicationDeadline(deadlineContext);
+  await report({ clientId: ad.clientId, parentClientId, type: 'ad', name: ad.name, status: 'creating' });
+  let artifact = null;
+  try {
+    artifact = await getCreativeArtifact({
+      creativeArtifacts,
+      ad,
+      accountId,
+      pageId,
+      token,
+      metaClient,
+      pagePublishingContexts,
+      getMedia,
+      ownerMetaUserId,
+      delay,
+      deadlineContext
+    });
+    assertPublicationDeadline(deadlineContext);
+    const remoteId = await metaClient.createAd(
+      token,
+      accountId,
+      buildAdParams(adSetId, artifact.creativeId, ad),
+      publicationOptions(deadlineContext)
+    );
+    artifact.successfulAds += 1;
+    const createdNode = {
+      clientId: ad.clientId,
+      parentClientId,
+      type: 'ad',
+      name: ad.name,
+      status: 'created',
+      remoteId,
+      creativeId: artifact.creativeId,
+      creativeArtifactKey: creativeArtifactKey(accountId, pageId, ad),
+      ...(artifact.postId ? { postId: artifact.postId } : {}),
+      ...(artifact.permalinkUrl ? { permalinkUrl: artifact.permalinkUrl } : {})
+    };
+    await report(createdNode);
+    assertPublicationDeadline(deadlineContext);
+    if (artifact.permalinkUrl || typeof metaClient.getAdPublication !== 'function') return;
+    // Chạy sau khi nhả slot tạo (xem publishDraft), nên không làm chậm ad kế tiếp.
+    return (lookupGate) => lookupGate(async () => {
+      try {
+        const publication = await metaClient.getAdPublication(
+          token,
+          remoteId,
+          publicationOptions(deadlineContext)
+        );
+        artifact.postId = publication?.postId ?? artifact.postId;
+        artifact.permalinkUrl = publication?.permalinkUrl ?? artifact.permalinkUrl;
+        if (artifact.postId || artifact.permalinkUrl) {
+          await report({
+            ...createdNode,
+            ...(artifact.postId ? { postId: artifact.postId } : {}),
+            ...(artifact.permalinkUrl ? { permalinkUrl: artifact.permalinkUrl } : {})
+          });
+        }
+      } catch {}
+      assertPublicationDeadline(deadlineContext);
+    });
+  } catch (error) {
+    const deadlineError = publicationDeadlineError(error, deadlineContext);
+    if (deadlineError) {
+      if (artifact?.postId && artifact.successfulAds === 0) {
+        await cleanupArtifactAfterDeadline(artifact, metaClient, deadlineError);
+      }
+      throw deadlineError;
+    }
+    if (isMetaThrottleError(error)) {
+      await report({
+        clientId: ad.clientId,
+        parentClientId,
+        type: 'ad',
+        name: ad.name,
+        status: 'retry_pending',
+        ...(artifact?.creativeId ? {
+          creativeId: artifact.creativeId,
+          creativeArtifactKey: creativeArtifactKey(accountId, pageId, ad)
+        } : {}),
+        ...(artifact?.postId ? { postId: artifact.postId } : {}),
+        error: normalizeError(error)
+      });
+      throw error;
+    }
+    const normalizedError = { ...normalizeError(error) };
+    const failedNode = {
+      clientId: ad.clientId,
+      parentClientId,
+      type: 'ad',
+      name: ad.name,
+      status: 'failed',
+      ...((artifact?.postId || error.postId) ? { postId: artifact?.postId ?? error.postId } : {}),
+      error: normalizedError
+    };
+    if (artifact) artifact.failedAds.push(failedNode);
+    await report(failedNode);
+  }
+}
+
+function getCreativeArtifact({ creativeArtifacts, ad, accountId, pageId, ...context }) {
+  const key = creativeArtifactKey(accountId, pageId, ad);
+  if (!creativeArtifacts.has(key)) {
+    creativeArtifacts.set(key, createCreativeArtifact({ ad, accountId, pageId, ...context }));
+  }
+  return creativeArtifacts.get(key);
+}
+
+async function createCreativeArtifact({
+  ad,
+  accountId,
+  pageId,
+  token,
+  metaClient,
+  pagePublishingContexts,
+  getMedia,
+  ownerMetaUserId,
+  delay,
+  deadlineContext
+}) {
+  assertPublicationDeadline(deadlineContext);
+  const media = await getMedia(ownerMetaUserId, ad.mediaId);
+  if (!media) {
+    throw new Error('Media đã chọn không còn tồn tại');
+  }
+
+  if ((ad.publicationMode ?? 'DARK') !== 'PUBLIC_TEST') {
+    const creativeId = await createCreativeForMedia({
+      ad,
+      media,
+      accountId,
+      pageId,
+      token,
+      metaClient,
+      delay,
+      deadlineContext
+    });
+    return {
+      creativeId,
+      postId: null,
+      permalinkUrl: null,
+      pageAccessToken: '',
+      successfulAds: 0,
+      failedAds: []
+    };
+  }
+
+  if (!media.mimeType.startsWith('image/')) {
+    throw new Error('Public Test hiện chỉ hỗ trợ ảnh; video cần Meta App Live');
+  }
+  const pageContext = pagePublishingContexts.get(String(pageId));
+  if (!pageContext?.accessToken) {
+    throw new Error('Không tìm thấy Page access token để đăng bài Public Test');
+  }
+
+  let publicPost;
+  try {
+    assertPublicationDeadline(deadlineContext);
+    publicPost = await metaClient.createPublicPhotoPost(
+      pageContext.accessToken,
+      pageId,
+      media,
+      ad.primaryText,
+      publicationOptions(deadlineContext)
+    );
+    assertPublicationDeadline(deadlineContext);
+    const creativeId = await metaClient.createCreative(
+      token,
+      accountId,
+      buildPublicPostCreativeParams(publicPost.postId, ad),
+      publicationOptions(deadlineContext)
+    );
+    assertPublicationDeadline(deadlineContext);
+    return {
+      creativeId,
+      postId: publicPost.postId,
+      pageAccessToken: pageContext.accessToken,
+      successfulAds: 0,
+      failedAds: []
+    };
+  } catch (error) {
+    const deadlineError = publicationDeadlineError(error, deadlineContext);
+    if (deadlineError) {
+      if (publicPost?.postId) {
+        await cleanupPublicPostAfterDeadline({
+          metaClient,
+          pageAccessToken: pageContext.accessToken,
+          postId: publicPost.postId,
+          deadlineError
+        });
+      }
+      throw deadlineError;
+    }
+    if (!publicPost?.postId) throw error;
+    let postDeleted = false;
+    try {
+      assertPublicationDeadline(deadlineContext);
+      await metaClient.deletePagePost(
+        pageContext.accessToken,
+        publicPost.postId,
+        publicationOptions(deadlineContext)
+      );
+      postDeleted = true;
+      assertPublicationDeadline(deadlineContext);
+    } catch (cleanupError) {
+      const cleanupDeadlineError = publicationDeadlineError(cleanupError, deadlineContext);
+      if (cleanupDeadlineError) {
+        if (!postDeleted) {
+          await cleanupPublicPostAfterDeadline({
+            metaClient,
+            pageAccessToken: pageContext.accessToken,
+            postId: publicPost.postId,
+            deadlineError: cleanupDeadlineError
+          });
+        }
+        throw cleanupDeadlineError;
+      }
+      throw appendCleanupError(error, cleanupError, publicPost.postId);
+    }
+    throw error;
+  }
+}
+
+function creativeArtifactKey(accountId, pageId, ad) {
+  return JSON.stringify({
+    accountId,
+    creativeGroupId: ad.creativeGroupId ?? ad.clientId,
+    pageId: String(pageId),
+    publicationMode: ad.publicationMode ?? 'DARK',
+    mediaId: ad.mediaId,
+    primaryText: ad.primaryText ?? '',
+    headline: ad.headline ?? '',
+    conversation: visibleConversationSignature(ad.conversation)
+  });
+}
+
+function seedCreativeArtifacts(draft, nodes) {
+  const artifacts = new Map();
+  const adsByClientId = new Map();
+  for (const campaign of draft.campaigns) {
+    for (const adSet of campaign.adSets) {
+      for (const ad of adSet.ads) {
+        adsByClientId.set(ad.clientId, { ad, accountId: campaign.adAccountId, pageId: campaign.pageId });
+      }
+    }
+  }
+
+  for (const node of nodes) {
+    if (node.type !== 'ad' || !['created', 'retry_pending'].includes(node.status) || !node.creativeId || !node.creativeArtifactKey) continue;
+    const match = adsByClientId.get(node.clientId);
+    if (!match) continue;
+    const key = creativeArtifactKey(match.accountId, match.pageId, match.ad);
+    if (key !== node.creativeArtifactKey) continue;
+    const current = artifacts.get(key);
+    if (current) {
+      if (node.status === 'created') current.then((artifact) => { artifact.successfulAds += 1; });
+      continue;
+    }
+    artifacts.set(key, Promise.resolve({
+      creativeId: node.creativeId,
+      postId: node.postId ?? null,
+      permalinkUrl: node.permalinkUrl ?? null,
+      pageAccessToken: '',
+      successfulAds: node.status === 'created' ? 1 : 0,
+      failedAds: []
+    }));
+  }
+  return artifacts;
+}
+
+function visibleConversationSignature(conversation = {}) {
+  return {
+    greeting: conversation.greeting ?? '',
+    quickReplies: (conversation.quickReplies ?? []).map(({ title, payload }) => ({ title, payload })),
+    showBusinessPhoneNumber: Boolean(conversation.showBusinessPhoneNumber),
+    businessPhoneNumber: conversation.businessPhoneNumber ?? '',
+    customerActions: (conversation.customerActions ?? []).map(({ label, type, value }) => ({
+      label,
+      type,
+      value
+    }))
+  };
+}
+
+async function cleanupUnusedPublicPosts(creativeArtifacts, metaClient, report, deadlineContext) {
+  for (const artifactPromise of creativeArtifacts.values()) {
+    let artifact;
+    try {
+      artifact = await artifactPromise;
+    } catch (error) {
+      const deadlineError = publicationDeadlineError(error, deadlineContext);
+      if (deadlineError) throw deadlineError;
+      continue;
+    }
+    if (!artifact.postId || artifact.successfulAds > 0 || artifact.failedAds.length === 0) continue;
+    let postDeleted = false;
+    try {
+      assertPublicationDeadline(deadlineContext);
+      await metaClient.deletePagePost(
+        artifact.pageAccessToken,
+        artifact.postId,
+        publicationOptions(deadlineContext)
+      );
+      postDeleted = true;
+      assertPublicationDeadline(deadlineContext);
+    } catch (cleanupError) {
+      const deadlineError = publicationDeadlineError(cleanupError, deadlineContext);
+      if (deadlineError) {
+        if (!postDeleted) await cleanupArtifactAfterDeadline(artifact, metaClient, deadlineError);
+        throw deadlineError;
+      }
+      const cleanupMessage = normalizeError(cleanupError).message;
+      for (const failedNode of artifact.failedAds) {
+        await report({
+          ...failedNode,
+          postId: artifact.postId,
+          error: {
+            ...failedNode.error,
+            message: `${failedNode.error.message} | Không xóa được bài công khai ${artifact.postId}: ${cleanupMessage}`
+          }
+        });
+      }
+    }
+  }
+}
+
+function appendCleanupError(error, cleanupError, postId) {
+  const normalizedError = normalizeError(error);
+  const cleanupMessage = normalizeError(cleanupError).message;
+  const wrapped = new Error(
+    `${normalizedError.message} | Không xóa được bài công khai ${postId}: ${cleanupMessage}`
+  );
+  wrapped.meta = { ...normalizedError, message: wrapped.message };
+  wrapped.postId = postId;
+  return wrapped;
+}
+
+async function createCreativeForMedia({
+  ad,
+  media,
+  accountId,
+  pageId,
+  token,
+  metaClient,
+  delay,
+  deadlineContext
+}) {
+  if (media.mimeType.startsWith('image/')) {
+    assertPublicationDeadline(deadlineContext);
+    const imageHash = media.metaImageHash ?? await metaClient.uploadImage(
+      token,
+      accountId,
+      media,
+      publicationOptions(deadlineContext)
+    );
+    assertPublicationDeadline(deadlineContext);
+    const creativeId = await createCreativeWithRetry({
+      metaClient,
+      token,
+      accountId,
+      params: buildImageCreativeParams(pageId, imageHash, ad),
+      delay,
+      deadlineContext
+    });
+    assertPublicationDeadline(deadlineContext);
+    return creativeId;
+  }
+
+  if (!media.mimeType.startsWith('video/')) {
+    throw new Error('Chỉ hỗ trợ ảnh hoặc video');
+  }
+
+  assertPublicationDeadline(deadlineContext);
+  const videoId = media.metaVideoId ?? await metaClient.uploadVideo(
+    token,
+    accountId,
+    media,
+    publicationOptions(deadlineContext)
+  );
+  assertPublicationDeadline(deadlineContext);
+  const thumbnail = await waitForVideoReady(metaClient, token, videoId, delay, deadlineContext);
+  assertPublicationDeadline(deadlineContext);
+  const creativeId = await createCreativeWithRetry({
+    metaClient,
+    token,
+    accountId,
+    params: buildVideoCreativeParams(pageId, videoId, thumbnail, ad),
+    delay,
+    deadlineContext
+  });
+  assertPublicationDeadline(deadlineContext);
+  return creativeId;
+}
+
+async function createCreativeWithRetry({
+  metaClient,
+  token,
+  accountId,
+  params,
+  delay,
+  deadlineContext
+}) {
+  for (let attempt = 0; ; attempt += 1) {
+    assertPublicationDeadline(deadlineContext);
+    try {
+      return await metaClient.createCreative(
+        token,
+        accountId,
+        params,
+        publicationOptions(deadlineContext)
+      );
+    } catch (error) {
+      const retryDelay = TRANSIENT_CREATIVE_RETRY_DELAYS_MS[attempt];
+      if (!isTransientCreativeError(error) || retryDelay === undefined) throw error;
+      if (deadlineContext.now() + retryDelay >= deadlineContext.deadlineAt) throw error;
+      await delay(retryDelay);
+    }
+  }
+}
+
+function isTransientCreativeError(error) {
+  const normalized = normalizeError(error);
+  return Number(normalized.code) === 100 && Number(normalized.subcode) === 1487390;
+}
+
+async function waitForVideoReady(metaClient, token, videoId, delay, deadlineContext) {
+  const videoDeadlineAt = Math.min(deadlineContext.now() + 120_000, deadlineContext.deadlineAt);
+  while (true) {
+    assertPublicationDeadline(deadlineContext);
+    if (deadlineContext.now() >= videoDeadlineAt) {
+      throw new Error('Video xử lý quá lâu');
+    }
+    const video = await metaClient.getVideoStatus(
+      token,
+      videoId,
+      publicationOptions(deadlineContext)
+    );
+    assertPublicationDeadline(deadlineContext);
+    const status = video.status?.video_status;
+    if (status === 'ready') {
+      return {
+        imageHash: video.thumbnail?.imageHash,
+        imageUrl: video.thumbnail?.imageUrl
+      };
+    }
+    if (status === 'error') {
+      throw new Error('Meta không xử lý được video');
+    }
+    const remainingMilliseconds = Math.min(
+      3_000,
+      videoDeadlineAt - deadlineContext.now(),
+      deadlineContext.deadlineAt - deadlineContext.now()
+    );
+    if (remainingMilliseconds > 0) await delay(remainingMilliseconds);
+  }
+}
+
+async function createNode({ report, clientId, parentClientId = null, name, type, create, deadlineContext }) {
+  assertPublicationDeadline(deadlineContext);
+  await report({ clientId, parentClientId, type, name, status: 'creating' });
+  try {
+    assertPublicationDeadline(deadlineContext);
+    const remoteId = await create();
+    const result = { clientId, parentClientId, type, name, status: 'created', remoteId };
+    await report(result);
+    assertPublicationDeadline(deadlineContext);
+    return result;
+  } catch (error) {
+    const deadlineError = publicationDeadlineError(error, deadlineContext);
+    if (deadlineError) throw deadlineError;
+    if (isMetaThrottleError(error)) {
+      await report({ clientId, parentClientId, type, name, status: 'retry_pending', error: normalizeError(error) });
+      throw error;
+    }
+    const result = { clientId, parentClientId, type, name, status: 'failed', error: normalizeError(error) };
+    await report(result);
+    return result;
+  }
+}
+
+async function skipCampaignChildren(campaign, report, parentClientId, nodes) {
+  for (const adSet of campaign.adSets) {
+    if (!terminalNode(nodes, adSet.clientId)) {
+      await report({ clientId: adSet.clientId, parentClientId, type: 'adSet', name: adSet.name, status: 'skipped' });
+    }
+    await skipAds(adSet, report, adSet.clientId, nodes);
+  }
+}
+
+async function skipAds(adSet, report, parentClientId, nodes) {
+  for (const ad of adSet.ads) {
+    if (!terminalNode(nodes, ad.clientId)) {
+      await report({ clientId: ad.clientId, parentClientId, type: 'ad', name: ad.name, status: 'skipped' });
+    }
+  }
+}
+
+function createGate(limit) {
+  let active = 0;
+  const waiting = [];
+  return async (task) => {
+    if (active >= limit) await new Promise((resolve) => waiting.push(resolve));
+    active += 1;
+    try {
+      return await task();
+    } finally {
+      active -= 1;
+      waiting.shift()?.();
+    }
+  };
+}
+
+// Chờ hết mọi task đang chạy rồi mới ném lỗi đầu tiên, để không bỏ rơi request Meta giữa chừng.
+async function runAll(items, task) {
+  const results = await Promise.allSettled(items.map(task));
+  const failed = results.find((result) => result.status === 'rejected');
+  if (failed) throw failed.reason;
+}
+
+function terminalNode(nodes, clientId) {
+  return nodes.find((node) => node.clientId === clientId && ['created', 'failed', 'skipped'].includes(node.status));
+}
+
+function draftIsComplete(draft, nodes) {
+  return draft.campaigns.every((campaign) => (
+    terminalNode(nodes, campaign.clientId)
+    && campaign.adSets.every((adSet) => (
+      terminalNode(nodes, adSet.clientId)
+      && adSet.ads.every((ad) => terminalNode(nodes, ad.clientId))
+    ))
+  ));
+}
+
+function normalizeError(error) {
+  return error.meta ?? {
+    message: error.message ?? 'Không thể tạo đối tượng quảng cáo',
+    type: error.name ?? 'Error',
+    code: null,
+    subcode: null,
+    fbtraceId: null
+  };
+}
+
+function assertPublicationDeadline({ deadlineAt, now, signal }) {
+  if (!signal?.aborted && now() < deadlineAt) return;
+  throw new PublicationDeadlineError();
+}
+
+function isPublicationDeadlineError(error) {
+  return error?.name === 'PublicationDeadlineError';
+}
+
+function publicationDeadlineError(error, deadlineContext) {
+  if (isPublicationDeadlineError(error)) return error;
+  if (
+    deadlineContext.signal?.aborted
+    || deadlineContext.now() >= deadlineContext.deadlineAt
+    || error?.name === 'AbortError'
+  ) {
+    return new PublicationDeadlineError(error);
+  }
+  return null;
+}
+
+function publicationOptions(deadlineContext) {
+  return { signal: deadlineContext.signal };
+}
+
+async function cleanupArtifactAfterDeadline(artifact, metaClient, deadlineError) {
+  if (artifact.deadlineCleanupAttempted) return;
+  artifact.deadlineCleanupAttempted = true;
+  await cleanupPublicPostAfterDeadline({
+    metaClient,
+    pageAccessToken: artifact.pageAccessToken,
+    postId: artifact.postId,
+    deadlineError
+  });
+}
+
+async function cleanupPublicPostAfterDeadline({
+  metaClient,
+  pageAccessToken,
+  postId,
+  deadlineError
+}) {
+  const cleanupController = new AbortController();
+  const cleanupTimer = setTimeout(
+    () => cleanupController.abort(),
+    PUBLIC_POST_DEADLINE_CLEANUP_MS
+  );
+  cleanupTimer.unref?.();
+  try {
+    await metaClient.deletePagePost(
+      pageAccessToken,
+      postId,
+      { signal: cleanupController.signal }
+    );
+  } catch (cleanupError) {
+    appendDeadlineCleanupError(deadlineError, cleanupError, postId);
+  } finally {
+    clearTimeout(cleanupTimer);
+  }
+}
+
+function appendDeadlineCleanupError(deadlineError, cleanupError, postId) {
+  const cleanupMessage = normalizeError(cleanupError).message;
+  deadlineError.message = `${deadlineError.message} | Không xóa được bài Public Test ${postId}: ${cleanupMessage}`;
+  deadlineError.cleanupError = normalizeError(cleanupError);
+}
+
+class PublicationDeadlineError extends Error {
+  constructor(cause) {
+    super('Lượt tạo đã hết thời gian xử lý an toàn; hệ thống không tiếp tục tạo thêm đối tượng Meta.');
+    this.name = 'PublicationDeadlineError';
+    this.expose = true;
+    this.code = 'PUBLISH_DEADLINE_EXCEEDED';
+    if (cause) this.cause = cause;
+  }
+}
+
+function defaultDelay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}

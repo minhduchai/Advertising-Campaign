@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="vi">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#0f172a" />
+  <script>
+    (() => {
+      try {
+        const saved = localStorage.getItem('meta-campaign-theme');
+        const theme = saved === 'light' || saved === 'dark'
+          ? saved
+          : (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        document.documentElement.dataset.theme = theme;
+        document.querySelector('meta[name="theme-color"]').content = theme === 'light' ? '#f6f8fc' : '#0f172a';
+      } catch {
+        document.documentElement.dataset.theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }
+    })();
+  </script>
+  <title>Meta Campaign Builder — Modern Ads Management</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico?v=lg-2" sizes="16x16 32x32 48x48 64x64 128x128 256x256" />
+  <link rel="apple-touch-icon" href="/assets/lg-clinic-logo.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300..800;1,300..800&family=Inter:wght@400;500;600;700&display=swap"
+    rel="stylesheet" />
+  <link rel="stylesheet" href="/app.css" />
+  <script>
+    (() => {
+      const params = new URLSearchParams(location.search);
+      let restorePreview = false;
+      try {
+        restorePreview = params.has('connected') && sessionStorage.getItem('launch-control-return') === '1';
+        if (params.get('frontend') === 'launch-control') sessionStorage.setItem('launch-control-return', '1');
+      } catch { /* Preview selection still works when storage is unavailable. */ }
+      if (params.get('frontend') !== 'launch-control' && !restorePreview) return;
+      if (restorePreview) {
+        params.set('frontend', 'launch-control');
+        params.set('realResources', '1');
+        history.replaceState({}, '', location.pathname + '?' + params.toString());
+      }
+      document.documentElement.dataset.frontend = 'launch-control';
+      // The prototype owns its visual system. Legacy widget styles are layered
+      // as a fallback by launch-preview.css, never applied above the design.
+      document.querySelector('link[href="/app.css"]')?.remove();
+      const stylesheet = document.createElement('link');
+      stylesheet.rel = 'stylesheet';
+      stylesheet.href = '/launch-preview.css';
+      document.head.appendChild(stylesheet);
+    })();
+  </script>
+</head>
+
+<body>
+  <a class="skip-link" href="#workspace">Bỏ qua đến nội dung chính</a>
+  <header class="topbar">
+    <div class="topbar-brand">
+      <button id="toggle-tree" type="button" class="mobile-nav-button" aria-label="Mở cấu trúc chiến dịch"
+        aria-controls="workspace-tree-panel" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path
+            d="M4 6h16M4 12h16M4 18h16"></path></svg><span>Cấu trúc</span></button>
+      <img class="brand-mark" src="/assets/lg-clinic-logo-128.png" width="38" height="38" alt="" />
+      <div class="brand-copy">
+        <strong>Meta Campaign Builder</strong>
+        <small>Tạo và kích hoạt quảng cáo ngay</small>
+      </div>
+    </div>
+
+    <nav id="workspace-mode-nav" class="workspace-mode-nav" aria-label="Khu vực làm việc">
+      <span class="workspace-mode-pill" aria-hidden="true"></span>
+      <button id="open-campaign-workspace" type="button" class="workspace-mode-button is-active"
+        aria-pressed="true"><span>Chiến dịch</span></button>
+      <button id="open-history-workspace" type="button" class="workspace-mode-button" aria-pressed="false"
+        aria-label="Lịch sử hoạt động"><span>Lịch sử</span><span
+          class="workspace-mode-suffix">hoạt động</span></button>
+    </nav>
+    <div class="topbar-actions">
+      <button id="toggle-theme" type="button" class="theme-toggle" aria-label="Chuyển sang chế độ sáng"
+        title="Chuyển sang chế độ sáng">
+        <span data-theme-icon aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"></circle><path
+              d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.66 6.34l1.41-1.41"></path></svg></span>
+        <span data-theme-label class="sr-only">Chuyển sang chế độ sáng</span>
+      </button>
+      <div class="connection-account-control">
+        <button id="connect-meta" type="button" class="connection-account-button" aria-label="Kết nối Meta"
+          aria-haspopup="menu" aria-expanded="false">
+          <span class="connection-dot"></span>
+          <span class="connection-account-label">Kết nối Meta</span>
+          <svg class="connection-account-chevron" viewBox="0 0 20 20" aria-hidden="true">
+            <path d="m7 5 5 5-5 5" />
+          </svg>
+        </button>
+        <div id="meta-account-menu" class="connection-account-menu" role="menu" hidden>
+          <button type="button" role="menuitem" data-account-action="refresh">
+            <span class="account-menu-icon" aria-hidden="true">⟳</span>
+            <span><strong>Làm mới dữ liệu</strong><small>Tải lại tài khoản, Page, đối tượng và mẫu từ Meta</small></span>
+          </button>
+          <button type="button" role="menuitem" data-account-action="reconnect">
+            <span class="account-menu-icon" aria-hidden="true">↻</span>
+            <span><strong>Kết nối lại Meta</strong><small>Làm mới quyền và tài nguyên</small></span>
+          </button>
+          <button type="button" role="menuitem" data-account-action="switch">
+            <span class="account-menu-icon" aria-hidden="true">⇄</span>
+            <span><strong>Đổi tài khoản Facebook</strong><small>Ngắt phiên rồi mở OAuth</small></span>
+          </button>
+          <button type="button" role="menuitem" class="is-danger" data-account-action="disconnect">
+            <span class="account-menu-icon" aria-hidden="true">×</span>
+            <span><strong>Ngắt kết nối</strong><small>Giữ nguyên lịch sử và thư viện mẫu</small></span>
+          </button>
+        </div>
+      </div>
+      <button id="toggle-review" type="button" class="mobile-review-button" aria-label="Mở tiến độ đăng"
+        aria-controls="workspace-review-panel" aria-expanded="false" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path
+            d="M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"></path></svg><span>Tiến độ</span></button>
+    </div>
+  </header>
+
+  <main id="workspace" class="workspace-shell">
+    <aside id="workspace-tree-panel" class="workspace-tree" aria-label="Đang tải cấu trúc">
+      <div class="loading-block"></div>
+    </aside>
+    <section class="workspace-editor" aria-label="Đang tải trình chỉnh sửa">
+      <div class="loading-editor">
+        <div></div>
+        <div></div>
+        <div></div>
+      </div>
+    </section>
+    <aside id="workspace-review-panel" class="workspace-review" aria-label="Đang tải kiểm tra">
+      <div class="loading-block"></div>
+    </aside>
+  </main>
+
+  <section id="run-results" class="results-drawer" aria-label="Nhật ký tạo quảng cáo"></section>
+  <section id="activity-history" class="activity-history-workspace" aria-label="Lịch sử hoạt động" hidden></section>
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+
+  <dialog id="action-confirmation" class="action-confirmation" aria-labelledby="action-confirmation-title"
+    aria-describedby="action-confirmation-message">
+    <form method="dialog" class="action-confirmation-card">
+      <div class="action-confirmation-icon" aria-hidden="true">!</div>
+      <div class="action-confirmation-copy">
+        <span class="eyebrow">Xác nhận thao tác</span>
+        <h2 id="action-confirmation-title">Bạn có chắc chắn?</h2>
+        <p id="action-confirmation-message"></p>
+      </div>
+      <div class="action-confirmation-actions">
+        <button type="submit" value="cancel" class="button-secondary">Hủy</button>
+        <button type="submit" value="confirm" class="button-danger" data-confirm-action>Tiếp tục</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="publish-confirmation" class="publish-confirmation" aria-labelledby="publish-confirmation-title">
+    <form method="dialog" class="publish-confirmation-card">
+      <div class="publish-confirmation-icon" aria-hidden="true">!</div>
+      <div class="publish-confirmation-copy">
+        <span class="eyebrow">Xác nhận tạo quảng cáo</span>
+        <h2 id="publish-confirmation-title">Tạo và kích hoạt ngay?</h2>
+        <p>Campaign, nhóm quảng cáo và quảng cáo sẽ được tạo ở trạng thái <strong>ACTIVE</strong> và có thể bắt đầu chi
+          tiêu theo ngân sách đã chọn.</p>
+      </div>
+      <div class="publish-confirmation-note">
+        <span aria-hidden="true">₫</span>
+        <p><strong>Quảng cáo có thể phát sinh chi phí ngay.</strong><br>Hãy kiểm tra tài khoản, Page và ngân sách trước
+          khi tiếp tục.</p>
+      </div>
+      <div class="publish-confirmation-actions">
+        <button type="submit" value="cancel" class="button-secondary">Hủy</button>
+        <button type="submit" value="confirm" class="button-primary">Tạo &amp; kích hoạt</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="duplicate-adset-dialog" class="duplicate-adset-dialog" aria-labelledby="duplicate-adset-title"
+    aria-describedby="duplicate-adset-description">
+    <form method="dialog" class="duplicate-adset-card" data-duplicate-adset-form novalidate>
+      <div class="duplicate-adset-icon" aria-hidden="true">×N</div>
+      <div class="duplicate-adset-copy">
+        <span class="eyebrow">Nhân nhóm quảng cáo tương tự</span>
+        <h2 id="duplicate-adset-title">Tạo nhiều nhóm cùng lúc</h2>
+        <p id="duplicate-adset-description">Toàn bộ cài đặt và quảng cáo trong nhóm sẽ được sao chép.</p>
+      </div>
+      <div class="duplicate-adset-source">
+        <span>Nhóm nguồn</span>
+        <strong data-duplicate-adset-source>Nhóm quảng cáo</strong>
+      </div>
+      <div class="duplicate-adset-field">
+        <label for="duplicate-adset-quantity">Số lượng bản sao</label>
+        <input id="duplicate-adset-quantity" name="quantity" type="number" inputmode="numeric" min="1" max="20"
+          step="1" value="1" aria-describedby="duplicate-adset-help duplicate-adset-error" required />
+        <small id="duplicate-adset-help">Nhập từ 1 đến 20 nhóm.</small>
+        <small id="duplicate-adset-error" class="field-error" role="alert" hidden>Vui lòng nhập số nguyên từ 1 đến
+          20.</small>
+      </div>
+      <div class="duplicate-adset-actions">
+        <button type="submit" value="cancel" class="button-secondary">Hủy</button>
+        <button type="submit" value="confirm" class="button-primary">Nhân nhóm tương tự</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="activity-history-report-dialog" class="activity-history-report-dialog"
+    aria-labelledby="activity-history-report-title" aria-describedby="activity-history-report-description">
+    <form method="dialog" class="activity-history-report-card">
+      <header class="activity-history-report-header">
+        <div>
+          <span class="eyebrow">Lịch sử bài quảng cáo</span>
+          <h2 id="activity-history-report-title">Bảng sao chép nhanh</h2>
+          <p id="activity-history-report-description">Bốn cột được định dạng sẵn để dán trực tiếp vào Excel hoặc Google Sheets.</p>
+        </div>
+        <button type="submit" value="cancel" class="activity-history-report-close" aria-label="Đóng bảng">×</button>
+      </header>
+      <div class="activity-history-report-meta">
+        <strong data-history-report-count>0 bài quảng cáo</strong>
+        <span>Ngày tạo · Nhân viên · Dịch vụ · Link bài</span>
+      </div>
+      <div class="activity-history-report-content" data-history-report-content></div>
+      <footer class="activity-history-report-actions">
+        <button type="button" class="button-primary" data-copy-history-report disabled>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"></path></svg>
+          <span>Sao chép bảng</span>
+        </button>
+        <button type="submit" value="cancel" class="button-secondary">Đóng</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="disconnect-meta-confirmation" class="disconnect-meta-confirmation"
+    aria-labelledby="disconnect-meta-title">
+    <form method="dialog" class="disconnect-meta-card">
+      <div class="disconnect-meta-icon" aria-hidden="true">×</div>
+      <div class="disconnect-meta-copy">
+        <span class="eyebrow">Tài khoản Meta</span>
+        <h2 id="disconnect-meta-title">Ngắt kết nối tài khoản?</h2>
+        <p>Token Meta và tài nguyên đang tải sẽ được xóa khỏi phiên này. Lịch sử hoạt động và thư viện mẫu vẫn được giữ
+          nguyên.</p>
+      </div>
+      <div class="disconnect-meta-actions">
+        <button type="submit" value="cancel" class="button-secondary">Hủy</button>
+        <button type="submit" value="confirm" class="button-danger">Ngắt kết nối</button>
+      </div>
+    </form>
+  </dialog>
+
+  <noscript>Ứng dụng cần JavaScript để hoạt động.</noscript>
+  <script type="module" src="/app.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,19 @@
+[Unit]
+Description=Campaign Builder web application
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=campaignadmin
+Group=campaignadmin
+WorkingDirectory=/home/campaignadmin/apps/campaignbuilder
+EnvironmentFile=/home/campaignadmin/.config/campaignbuilder/app.env
+ExecStart=/usr/bin/node src/hosted-server.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

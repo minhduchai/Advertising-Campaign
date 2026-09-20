@@ -1,0 +1,29 @@
+{
+  "name": "meta-ads-campaign-builder",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:client": "node scripts/build-client.js",
+    "build": "npm run build:client",
+    "dev": "npm run build:client && node --env-file=.env --watch src/server.js",
+    "start": "npm run build:client && node --env-file=.env src/server.js",
+    "start:hosted": "node src/hosted-server.js",
+    "test": "npm run build:client && node --test",
+    "db:migrate:postgres": "node scripts/migrate-postgres.js",
+    "db:migrate:audience-templates:postgres": "node --env-file-if-exists=.env.production.local scripts/migrate-audience-templates-postgres.js",
+    "templates:export": "node --env-file=.env scripts/export-conversation-templates.js",
+    "templates:import": "node scripts/import-conversation-templates.js",
+    "templates:connections": "node scripts/list-production-connections.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1111.0",
+    "@aws-sdk/s3-request-presigner": "^3.1111.0",
+    "@neondatabase/serverless": "1.1.0",
+    "@vercel/blob": "2.7.0",
+    "leaflet": "1.9.4",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

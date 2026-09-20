@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "creative-campaign-workflow",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-17",
+  "triggers": { "crons": ["* * * * *"] },
+  "workflows": [
+    {
+      "name": "creative-campaign-publishing",
+      "binding": "CAMPAIGN_WORKFLOW",
+      "class_name": "CampaignWorkflow"
+    }
+  ],
+  "vars": {
+    "VERCEL_INTERNAL_BASE_URL": "https://advertisingserver.tailac4f15.ts.net"
+  }
+}
