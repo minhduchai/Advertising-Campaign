@@ -99,6 +99,21 @@ export async function applyPostgresSchema(sql) {
       created_at BIGINT NOT NULL
     )
   `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS meta_video_assets (
+      owner_meta_user_id TEXT NOT NULL,
+      media_id TEXT NOT NULL,
+      ad_account_id TEXT NOT NULL,
+      meta_video_id TEXT NOT NULL,
+      created_at BIGINT NOT NULL,
+      updated_at BIGINT NOT NULL,
+      PRIMARY KEY (owner_meta_user_id, media_id, ad_account_id)
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS meta_video_assets_media_idx
+    ON meta_video_assets (owner_meta_user_id, media_id)
+  `;
   await sql`CREATE INDEX IF NOT EXISTS media_owner_idx ON media(owner_meta_user_id)`;
   await sql`
     CREATE TABLE IF NOT EXISTS runs (
@@ -255,6 +270,7 @@ export async function applyPostgresSchema(sql) {
     'upload_agent_devices',
     'telegram_upload_jobs',
     'media',
+    'meta_video_assets',
     'runs',
     'node_results',
     'conversation_templates',

@@ -1904,6 +1904,12 @@ async function retryRunAdLocally({ runId, ownerMetaUserId, token, workflowToken,
       if (String(requestedOwnerId) !== String(ownerMetaUserId)) return null;
       return mediaAssets.get(mediaId) ?? mediaStore.getMedia({ ownerMetaUserId, id: mediaId });
     },
+    getMetaVideoId: (requestedOwnerId, mediaId, adAccountId) => (
+      db.getMetaVideoId(requestedOwnerId, mediaId, adAccountId)
+    ),
+    saveMetaVideoId: (requestedOwnerId, mediaId, adAccountId, metaVideoId) => (
+      db.saveMetaVideoId(requestedOwnerId, mediaId, adAccountId, metaVideoId)
+    ),
     onNodeUpdate: (targetRunId, node) => db.updateNodeResult(targetRunId, node)
   });
   const status = result.nodes.some((node) => ['failed', 'skipped'].includes(node.status))
@@ -2371,7 +2377,7 @@ async function handleInternalWorkflowRoute({ request, response, url, config, db,
       metaClient,
       pagePublishingContexts,
       existingNodes: run.nodes,
-      maxNewNodes: WORKFLOW_PUBLISH_BATCH_SIZE * config.publishConcurrency,
+      maxNewNodes: WORKFLOW_PUBLISH_BATCH_SIZE,
       concurrency: config.publishConcurrency,
       onlyAdClientIds: retryingAd ? retryAdClientIds : null,
       deadlineAt: Date.now() + WORKFLOW_STEP_HARD_DEADLINE_MS,
@@ -2380,6 +2386,12 @@ async function handleInternalWorkflowRoute({ request, response, url, config, db,
         if (String(ownerMetaUserId) !== String(run.ownerMetaUserId)) return null;
         return mediaAssets.get(mediaId) ?? mediaStore.getMedia({ ownerMetaUserId, id: mediaId });
       },
+      getMetaVideoId: (ownerMetaUserId, mediaId, adAccountId) => (
+        db.getMetaVideoId(ownerMetaUserId, mediaId, adAccountId)
+      ),
+      saveMetaVideoId: (ownerMetaUserId, mediaId, adAccountId, metaVideoId) => (
+        db.saveMetaVideoId(ownerMetaUserId, mediaId, adAccountId, metaVideoId)
+      ),
       onNodeUpdate: (targetRunId, node) => db.updateNodeResult(targetRunId, node)
     });
     return sendJson(response, 200, { status: result.complete ? 'ads_created' : 'creating', complete: result.complete, attempted: result.attempted });
@@ -2713,6 +2725,12 @@ async function handleRunCreation({ request, response, session, db, config, metaC
       pagePublishingContexts,
       getMedia: async (ownerMetaUserId, mediaId) => (
         ownerMetaUserId === session.metaUserId ? selectedMedia.get(mediaId) ?? null : null
+      ),
+      getMetaVideoId: (ownerMetaUserId, mediaId, adAccountId) => (
+        db.getMetaVideoId(ownerMetaUserId, mediaId, adAccountId)
+      ),
+      saveMetaVideoId: (ownerMetaUserId, mediaId, adAccountId, metaVideoId) => (
+        db.saveMetaVideoId(ownerMetaUserId, mediaId, adAccountId, metaVideoId)
       ),
       onNodeUpdate: async (runId, node) => {
         if (nodePersistenceError) throw nodePersistenceError;

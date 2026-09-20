@@ -39,6 +39,22 @@ test('Postgres schema creates owner-indexed seeding templates and jobs', async (
   assert.match(schema, /seeding_jobs_owner_run_status_idx/);
 });
 
+test('Postgres schema caches Meta video IDs per owner media and ad account', async () => {
+  const calls = [];
+  const sql = async (strings, ...values) => {
+    calls.push({ text: String.raw(strings, ...values.map(() => '?')), values });
+    return [];
+  };
+
+  const tables = await applyPostgresSchema(sql);
+  const schema = calls.map((call) => call.text).join('\n');
+
+  assert.ok(tables.includes('meta_video_assets'));
+  assert.match(schema, /CREATE TABLE IF NOT EXISTS meta_video_assets/);
+  assert.match(schema, /PRIMARY KEY \(owner_meta_user_id, media_id, ad_account_id\)/);
+  assert.match(schema, /meta_video_assets_media_idx/);
+});
+
 test('Postgres schema creates owner-indexed Campaign presets', async () => {
   const calls = [];
   const sql = async (strings, ...values) => {

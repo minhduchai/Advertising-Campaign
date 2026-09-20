@@ -1,7 +1,7 @@
 import { isMetaThrottleError } from './meta-client.js';
 
 const DEFAULT_MAX_GROUPS = 12;
-const DEFAULT_CONCURRENCY = 5; // matches PUBLISH_CONCURRENCY default
+const DEFAULT_CONCURRENCY = 3; // matches PUBLISH_CONCURRENCY default
 
 export async function syncRunPublications({
   run,

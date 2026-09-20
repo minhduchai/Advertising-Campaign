@@ -272,6 +272,30 @@ export function createPostgresDatabase(sql) {
       return mapOptionalMedia(row);
     },
 
+    async getMetaVideoId(ownerMetaUserId, mediaId, adAccountId) {
+      const row = (await sql`
+        SELECT meta_video_id FROM meta_video_assets
+        WHERE owner_meta_user_id = ${ownerMetaUserId}
+          AND media_id = ${mediaId}
+          AND ad_account_id = ${adAccountId}
+      `)[0];
+      return row?.meta_video_id ?? null;
+    },
+
+    async saveMetaVideoId(ownerMetaUserId, mediaId, adAccountId, metaVideoId, now = Date.now()) {
+      await sql`
+        INSERT INTO meta_video_assets (
+          owner_meta_user_id, media_id, ad_account_id, meta_video_id, created_at, updated_at
+        ) VALUES (
+          ${ownerMetaUserId}, ${mediaId}, ${adAccountId}, ${metaVideoId}, ${now}, ${now}
+        )
+        ON CONFLICT (owner_meta_user_id, media_id, ad_account_id) DO UPDATE SET
+          meta_video_id = EXCLUDED.meta_video_id,
+          updated_at = EXCLUDED.updated_at
+      `;
+      return metaVideoId;
+    },
+
     async registeredR2Keys(bucketName, keys) {
       if (keys.length === 0) return [];
       const urls = keys.map((key) => `r2://${bucketName}/${key}`);

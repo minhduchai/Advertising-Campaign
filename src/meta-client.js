@@ -813,6 +813,9 @@ async function sendWithThrottleRetry(send, signal, rateLimiter) {
     const waitMs = isThrottleResponse(response.status, payload) ? throttleWaitMs(response, attempt) : undefined;
     if (!(waitMs > 0)) throwMetaError(payload, response.status);
     rateLimiter?.recordThrottle(waitMs);
+    // App-wide limit responses are already quota pressure; retrying the same
+    // request here only amplifies the burst before the durable workflow queue.
+    if (Number(payload?.error?.code) === 4) throwMetaThrottle(payload, response.status, waitMs);
     if (waitMs > MAX_INLINE_THROTTLE_WAIT_MS) throwMetaThrottle(payload, response.status, waitMs);
     await sleep(waitMs, undefined, { signal });
   }

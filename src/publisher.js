@@ -10,6 +10,7 @@ import { isMetaThrottleError } from './meta-client.js';
 
 const PUBLIC_POST_DEADLINE_CLEANUP_MS = 10_000;
 const TRANSIENT_CREATIVE_RETRY_DELAYS_MS = [5_000, 12_000];
+const activeMetaVideoUploads = new Map();
 
 export async function publishDraft({
   draft,
@@ -28,12 +29,16 @@ export async function publishDraft({
   maxNewNodes = Number.POSITIVE_INFINITY,
   stopStartingAt = Number.POSITIVE_INFINITY,
   concurrency = 1,
-  onlyAdClientIds = null
+  onlyAdClientIds = null,
+  getMetaVideoId = async () => null,
+  saveMetaVideoId = async () => {}
 }) {
   const deadlineContext = { deadlineAt, now, signal };
   assertPublicationDeadline(deadlineContext);
   const nodes = existingNodes.map((node) => ({ ...node }));
   const creativeArtifacts = seedCreativeArtifacts(draft, nodes);
+  const metaVideoIds = new Map();
+  const readyVideos = new Map();
   let newNodes = 0;
   let bounded = false;
   const canCreateNode = () => newNodes < maxNewNodes && now() < stopStartingAt;
@@ -126,7 +131,11 @@ export async function publishDraft({
           report,
           delay,
           deadlineContext,
-          creativeArtifacts
+          creativeArtifacts,
+          metaVideoIds,
+          readyVideos,
+          getMetaVideoId,
+          saveMetaVideoId
         }));
         await lookupPublication?.(lookupGate);
       });
@@ -152,7 +161,11 @@ async function createAd({
   report,
   delay,
   deadlineContext,
-  creativeArtifacts
+  creativeArtifacts,
+  metaVideoIds,
+  readyVideos,
+  getMetaVideoId,
+  saveMetaVideoId
 }) {
   assertPublicationDeadline(deadlineContext);
   await report({ clientId: ad.clientId, parentClientId, type: 'ad', name: ad.name, status: 'creating' });
@@ -169,7 +182,11 @@ async function createAd({
       getMedia,
       ownerMetaUserId,
       delay,
-      deadlineContext
+      deadlineContext,
+      metaVideoIds,
+      readyVideos,
+      getMetaVideoId,
+      saveMetaVideoId
     });
     assertPublicationDeadline(deadlineContext);
     const remoteId = await metaClient.createAd(
@@ -271,7 +288,11 @@ async function createCreativeArtifact({
   getMedia,
   ownerMetaUserId,
   delay,
-  deadlineContext
+  deadlineContext,
+  metaVideoIds,
+  readyVideos,
+  getMetaVideoId,
+  saveMetaVideoId
 }) {
   assertPublicationDeadline(deadlineContext);
   const media = await getMedia(ownerMetaUserId, ad.mediaId);
@@ -288,7 +309,12 @@ async function createCreativeArtifact({
       token,
       metaClient,
       delay,
-      deadlineContext
+      deadlineContext,
+      metaVideoIds,
+      readyVideos,
+      getMetaVideoId,
+      saveMetaVideoId,
+      ownerMetaUserId
     });
     return {
       creativeId,
@@ -498,7 +524,12 @@ async function createCreativeForMedia({
   token,
   metaClient,
   delay,
-  deadlineContext
+  deadlineContext,
+  metaVideoIds,
+  readyVideos,
+  getMetaVideoId,
+  saveMetaVideoId,
+  ownerMetaUserId
 }) {
   if (media.mimeType.startsWith('image/')) {
     assertPublicationDeadline(deadlineContext);
@@ -526,14 +557,40 @@ async function createCreativeForMedia({
   }
 
   assertPublicationDeadline(deadlineContext);
-  const videoId = media.metaVideoId ?? await metaClient.uploadVideo(
-    token,
-    accountId,
-    media,
-    publicationOptions(deadlineContext)
-  );
+  const cacheKey = `${accountId}:${media.id}`;
+  let videoIdPromise = metaVideoIds?.get(cacheKey);
+  if (!videoIdPromise) {
+    const uploadKey = `${ownerMetaUserId}:${cacheKey}`;
+    videoIdPromise = activeMetaVideoUploads.get(uploadKey);
+    if (!videoIdPromise) {
+      videoIdPromise = (async () => {
+        const cachedVideoId = media.metaVideoId ?? await getMetaVideoId(ownerMetaUserId, media.id, accountId);
+        if (cachedVideoId) return String(cachedVideoId);
+        const uploadedVideoId = await metaClient.uploadVideo(
+          token,
+          accountId,
+          media,
+          publicationOptions(deadlineContext)
+        );
+        await saveMetaVideoId(ownerMetaUserId, media.id, accountId, uploadedVideoId);
+        return String(uploadedVideoId);
+      })();
+      activeMetaVideoUploads.set(uploadKey, videoIdPromise);
+      void videoIdPromise.then(
+        () => activeMetaVideoUploads.delete(uploadKey),
+        () => activeMetaVideoUploads.delete(uploadKey)
+      );
+    }
+    metaVideoIds?.set(cacheKey, videoIdPromise);
+  }
+  const videoId = await videoIdPromise;
   assertPublicationDeadline(deadlineContext);
-  const thumbnail = await waitForVideoReady(metaClient, token, videoId, delay, deadlineContext);
+  let thumbnailPromise = readyVideos?.get(cacheKey);
+  if (!thumbnailPromise) {
+    thumbnailPromise = waitForVideoReady(metaClient, token, videoId, delay, deadlineContext);
+    readyVideos?.set(cacheKey, thumbnailPromise);
+  }
+  const thumbnail = await thumbnailPromise;
   assertPublicationDeadline(deadlineContext);
   const creativeId = await createCreativeWithRetry({
     metaClient,
@@ -580,11 +637,17 @@ function isTransientCreativeError(error) {
 
 async function waitForVideoReady(metaClient, token, videoId, delay, deadlineContext) {
   const videoDeadlineAt = Math.min(deadlineContext.now() + 120_000, deadlineContext.deadlineAt);
+  const pollDelays = [0, 2_000, 4_000, 8_000, 15_000, 30_000];
+  let pollCount = 0;
   while (true) {
     assertPublicationDeadline(deadlineContext);
     if (deadlineContext.now() >= videoDeadlineAt) {
       throw new Error('Video xử lý quá lâu');
     }
+    const pollDelay = pollDelays[Math.min(pollCount, pollDelays.length - 1)];
+    pollCount += 1;
+    if (pollDelay > 0) await delay(Math.min(pollDelay, videoDeadlineAt - deadlineContext.now()));
+    assertPublicationDeadline(deadlineContext);
     const video = await metaClient.getVideoStatus(
       token,
       videoId,
@@ -601,12 +664,6 @@ async function waitForVideoReady(metaClient, token, videoId, delay, deadlineCont
     if (status === 'error') {
       throw new Error('Meta không xử lý được video');
     }
-    const remainingMilliseconds = Math.min(
-      3_000,
-      videoDeadlineAt - deadlineContext.now(),
-      deadlineContext.deadlineAt - deadlineContext.now()
-    );
-    if (remainingMilliseconds > 0) await delay(remainingMilliseconds);
   }
 }
 

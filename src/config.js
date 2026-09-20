@@ -43,7 +43,7 @@ export function loadConfig(environment = process.env) {
   const workflowSharedSecret = environment.WORKFLOW_SHARED_SECRET?.trim() ?? '';
   const workflowEnabled = environment.WORKFLOW_ENABLED === 'true';
   // Số node tạo song song trên Meta trong một bước. Marketing API Access Tier đã Full access; các phanh theo mức dùng nằm ở meta-rate-limiter.
-  const publishConcurrency = Math.min(8, Math.floor(positiveNumber(environment.PUBLISH_CONCURRENCY, 5)));
+  const publishConcurrency = Math.min(8, Math.floor(positiveNumber(environment.PUBLISH_CONCURRENCY, 3)));
   const telegramBotUsername = (environment.TELEGRAM_BOT_USERNAME ?? 'duck_company_file_bot')
     .trim()
     .replace(/^@/, '');

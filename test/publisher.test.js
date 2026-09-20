@@ -864,6 +864,42 @@ test('lets a deadline escape video polling instead of becoming a node failure', 
   assert.equal(reported.some((node) => node.type === 'ad' && node.status === 'failed'), false);
 });
 
+test('uploads and polls one Meta video when independent Ads reuse the same media', async () => {
+  const videoDraft = draftWithTwoAdSets([
+    { clientId: 'adset-1', pageId: 'page_1' },
+    { clientId: 'adset-2', pageId: 'page_1' }
+  ]);
+  let uploads = 0;
+  let statusChecks = 0;
+  let cacheReads = 0;
+  const saved = [];
+
+  const result = await publishDraft({
+    draft: videoDraft,
+    token: 'token',
+    runId: 'run-video-cache',
+    ownerMetaUserId: 'owner-1',
+    concurrency: 2,
+    getMedia: async () => ({ id: 'media-image', mimeType: 'video/mp4', name: 'video.mp4' }),
+    getMetaVideoId: async () => { cacheReads += 1; return null; },
+    saveMetaVideoId: async (...args) => saved.push(args),
+    metaClient: {
+      createCampaign: async () => 'campaign-1',
+      createAdSet: async (_token, _account, params) => `set-${params.get('name')}`,
+      uploadVideo: async () => { uploads += 1; return 'video-1'; },
+      getVideoStatus: async () => { statusChecks += 1; return { status: { video_status: 'ready' } }; },
+      createCreative: async (_token, _account, params) => `creative-${params.get('name')}`,
+      createAd: async (_token, _account, params) => `ad-${params.get('name')}`
+    }
+  });
+
+  assert.equal(uploads, 1);
+  assert.equal(statusChecks, 1);
+  assert.equal(cacheReads, 1);
+  assert.deepEqual(saved, [['owner-1', 'media-image', 'act_1', 'video-1']]);
+  assert.equal(result.nodes.filter((node) => node.type === 'ad' && node.status === 'created').length, 2);
+});
+
 test('cleans up a Public Test post with an independent signal when its deadline expires', async () => {
   let currentTime = 0;
   let creativeCalls = 0;

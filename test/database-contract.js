@@ -104,6 +104,18 @@ export function registerDatabaseContract(name, createDatabase) {
     assert.equal((await database.getRun('run-1')).id, 'run-1');
   });
 
+  test(`${name} caches Meta video IDs by owner, media, and ad account`, async () => {
+    const database = await createDatabase();
+    await database.saveMetaVideoId('owner-1', 'media-1', 'act-1', 'video-1', 1_000);
+
+    assert.equal(await database.getMetaVideoId('owner-1', 'media-1', 'act-1'), 'video-1');
+    assert.equal(await database.getMetaVideoId('owner-1', 'media-1', 'act-2'), null);
+    assert.equal(await database.getMetaVideoId('owner-2', 'media-1', 'act-1'), null);
+
+    await database.saveMetaVideoId('owner-1', 'media-1', 'act-1', 'video-2', 2_000);
+    assert.equal(await database.getMetaVideoId('owner-1', 'media-1', 'act-1'), 'video-2');
+  });
+
   test(`${name} grants one workflow lease per run and only allows takeover after expiry`, async () => {
     const database = await createDatabase();
     await database.createRun(runFixture);

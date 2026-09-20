@@ -904,3 +904,19 @@ test('retries a throttled Meta call after the backoff and gives up when the wait
   );
   assert.equal(slowCalls, 1);
 });
+
+test('does not retry an app-wide code 4 limit inside the same request', async () => {
+  let calls = 0;
+  const client = createMetaClient(testConfig(), {
+    fetchImpl: async () => {
+      calls += 1;
+      return Response.json({ error: { message: 'Application request limit reached', code: 4 } }, { status: 400 });
+    }
+  });
+
+  await assert.rejects(
+    () => client.createCampaign('token', 'act_1', new URLSearchParams({ name: 'C' })),
+    (error) => error.name === 'MetaThrottleError' && error.meta?.code === 4
+  );
+  assert.equal(calls, 1);
+});

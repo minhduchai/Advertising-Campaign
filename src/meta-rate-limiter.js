@@ -1,4 +1,4 @@
-const MAX_CONCURRENCY = 5;
+const MAX_CONCURRENCY = 3;
 // Chưa có header usage (mới khởi động, nghỉ >10 phút, hoặc endpoint không trả header) thì chạy 2 luồng thay vì tuần tự.
 const UNKNOWN_USAGE_CONCURRENCY = 2;
 const HEADER_MAX_AGE_MS = 10 * 60_000;

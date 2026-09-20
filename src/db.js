@@ -82,6 +82,15 @@ export function createSqliteDatabase(path) {
       size_bytes INTEGER NOT NULL,
       created_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS meta_video_assets (
+      owner_meta_user_id TEXT NOT NULL,
+      media_id TEXT NOT NULL,
+      ad_account_id TEXT NOT NULL,
+      meta_video_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (owner_meta_user_id, media_id, ad_account_id)
+    );
     CREATE TABLE IF NOT EXISTS runs (
       id TEXT PRIMARY KEY,
       owner_meta_user_id TEXT NOT NULL,
@@ -155,6 +164,8 @@ export function createSqliteDatabase(path) {
       ON telegram_upload_jobs (status, expires_at, created_at);
     CREATE INDEX IF NOT EXISTS telegram_upload_jobs_owner_media_idx
       ON telegram_upload_jobs (owner_meta_user_id, media_id);
+    CREATE INDEX IF NOT EXISTS meta_video_assets_media_idx
+      ON meta_video_assets (owner_meta_user_id, media_id);
   `);
 
   migrateSqliteSchema(database);
@@ -466,6 +477,25 @@ export function createSqliteDatabase(path) {
         FROM media WHERE id = ? AND owner_meta_user_id = ?
       `).get(id, ownerMetaUserId);
       return row ? mapMedia(row) : null;
+    },
+
+    getMetaVideoId(ownerMetaUserId, mediaId, adAccountId) {
+      return database.prepare(`
+        SELECT meta_video_id FROM meta_video_assets
+        WHERE owner_meta_user_id = ? AND media_id = ? AND ad_account_id = ?
+      `).get(ownerMetaUserId, mediaId, adAccountId)?.meta_video_id ?? null;
+    },
+
+    saveMetaVideoId(ownerMetaUserId, mediaId, adAccountId, metaVideoId, now = Date.now()) {
+      database.prepare(`
+        INSERT INTO meta_video_assets (
+          owner_meta_user_id, media_id, ad_account_id, meta_video_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(owner_meta_user_id, media_id, ad_account_id) DO UPDATE SET
+          meta_video_id = excluded.meta_video_id,
+          updated_at = excluded.updated_at
+      `).run(ownerMetaUserId, mediaId, adAccountId, metaVideoId, now, now);
+      return metaVideoId;
     },
 
     registeredR2Keys(bucketName, keys) {
