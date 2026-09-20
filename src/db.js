@@ -498,6 +498,13 @@ export function createSqliteDatabase(path) {
       return metaVideoId;
     },
 
+    deleteMetaVideoId(ownerMetaUserId, mediaId, adAccountId, metaVideoId) {
+      return database.prepare(`
+        DELETE FROM meta_video_assets
+        WHERE owner_meta_user_id = ? AND media_id = ? AND ad_account_id = ? AND meta_video_id = ?
+      `).run(ownerMetaUserId, mediaId, adAccountId, metaVideoId).changes > 0;
+    },
+
     registeredR2Keys(bucketName, keys) {
       if (keys.length === 0) return [];
       const urls = keys.map((key) => `r2://${bucketName}/${key}`);

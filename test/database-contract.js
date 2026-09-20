@@ -114,6 +114,9 @@ export function registerDatabaseContract(name, createDatabase) {
 
     await database.saveMetaVideoId('owner-1', 'media-1', 'act-1', 'video-2', 2_000);
     assert.equal(await database.getMetaVideoId('owner-1', 'media-1', 'act-1'), 'video-2');
+    assert.equal(await database.deleteMetaVideoId('owner-1', 'media-1', 'act-1', 'video-1'), false);
+    assert.equal(await database.deleteMetaVideoId('owner-1', 'media-1', 'act-1', 'video-2'), true);
+    assert.equal(await database.getMetaVideoId('owner-1', 'media-1', 'act-1'), null);
   });
 
   test(`${name} grants one workflow lease per run and only allows takeover after expiry`, async () => {

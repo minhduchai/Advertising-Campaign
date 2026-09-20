@@ -1910,6 +1910,9 @@ async function retryRunAdLocally({ runId, ownerMetaUserId, token, workflowToken,
     saveMetaVideoId: (requestedOwnerId, mediaId, adAccountId, metaVideoId) => (
       db.saveMetaVideoId(requestedOwnerId, mediaId, adAccountId, metaVideoId)
     ),
+    deleteMetaVideoId: (requestedOwnerId, mediaId, adAccountId, metaVideoId) => (
+      db.deleteMetaVideoId(requestedOwnerId, mediaId, adAccountId, metaVideoId)
+    ),
     onNodeUpdate: (targetRunId, node) => db.updateNodeResult(targetRunId, node)
   });
   const status = result.nodes.some((node) => ['failed', 'skipped'].includes(node.status))
@@ -2392,6 +2395,9 @@ async function handleInternalWorkflowRoute({ request, response, url, config, db,
       saveMetaVideoId: (ownerMetaUserId, mediaId, adAccountId, metaVideoId) => (
         db.saveMetaVideoId(ownerMetaUserId, mediaId, adAccountId, metaVideoId)
       ),
+      deleteMetaVideoId: (ownerMetaUserId, mediaId, adAccountId, metaVideoId) => (
+        db.deleteMetaVideoId(ownerMetaUserId, mediaId, adAccountId, metaVideoId)
+      ),
       onNodeUpdate: (targetRunId, node) => db.updateNodeResult(targetRunId, node)
     });
     return sendJson(response, 200, { status: result.complete ? 'ads_created' : 'creating', complete: result.complete, attempted: result.attempted });
@@ -2731,6 +2737,9 @@ async function handleRunCreation({ request, response, session, db, config, metaC
       ),
       saveMetaVideoId: (ownerMetaUserId, mediaId, adAccountId, metaVideoId) => (
         db.saveMetaVideoId(ownerMetaUserId, mediaId, adAccountId, metaVideoId)
+      ),
+      deleteMetaVideoId: (ownerMetaUserId, mediaId, adAccountId, metaVideoId) => (
+        db.deleteMetaVideoId(ownerMetaUserId, mediaId, adAccountId, metaVideoId)
       ),
       onNodeUpdate: async (runId, node) => {
         if (nodePersistenceError) throw nodePersistenceError;

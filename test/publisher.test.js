@@ -900,6 +900,32 @@ test('uploads and polls one Meta video when independent Ads reuse the same media
   assert.equal(result.nodes.filter((node) => node.type === 'ad' && node.status === 'created').length, 2);
 });
 
+test('removes a cached Meta video ID when Meta reports processing failure', async () => {
+  const videoDraft = structuredClone(draft);
+  videoDraft.campaigns[0].adSets[0].ads[0].mediaId = 'media-video';
+  const deleted = [];
+
+  const result = await publishDraft({
+    draft: videoDraft,
+    token: 'token',
+    runId: 'run-video-processing-error',
+    ownerMetaUserId: 'owner-1',
+    getMedia: async () => ({ id: 'media-video', mimeType: 'video/mp4', name: 'video.mp4' }),
+    getMetaVideoId: async () => 'video-broken',
+    deleteMetaVideoId: async (...args) => deleted.push(args),
+    metaClient: {
+      createCampaign: async () => 'campaign-1',
+      createAdSet: async () => 'set-1',
+      getVideoStatus: async () => ({ status: { video_status: 'error' } }),
+      createCreative: async () => assert.fail('broken video must not create a creative'),
+      createAd: async () => assert.fail('broken video must not create an ad')
+    }
+  });
+
+  assert.deepEqual(deleted, [['owner-1', 'media-video', 'act_1', 'video-broken']]);
+  assert.equal(result.nodes.find((node) => node.type === 'ad').status, 'failed');
+});
+
 test('cleans up a Public Test post with an independent signal when its deadline expires', async () => {
   let currentTime = 0;
   let creativeCalls = 0;

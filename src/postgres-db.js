@@ -296,6 +296,18 @@ export function createPostgresDatabase(sql) {
       return metaVideoId;
     },
 
+    async deleteMetaVideoId(ownerMetaUserId, mediaId, adAccountId, metaVideoId) {
+      const rows = await sql`
+        DELETE FROM meta_video_assets
+        WHERE owner_meta_user_id = ${ownerMetaUserId}
+          AND media_id = ${mediaId}
+          AND ad_account_id = ${adAccountId}
+          AND meta_video_id = ${metaVideoId}
+        RETURNING meta_video_id
+      `;
+      return rows.length > 0;
+    },
+
     async registeredR2Keys(bucketName, keys) {
       if (keys.length === 0) return [];
       const urls = keys.map((key) => `r2://${bucketName}/${key}`);

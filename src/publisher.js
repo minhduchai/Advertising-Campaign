@@ -31,7 +31,8 @@ export async function publishDraft({
   concurrency = 1,
   onlyAdClientIds = null,
   getMetaVideoId = async () => null,
-  saveMetaVideoId = async () => {}
+  saveMetaVideoId = async () => {},
+  deleteMetaVideoId = async () => {}
 }) {
   const deadlineContext = { deadlineAt, now, signal };
   assertPublicationDeadline(deadlineContext);
@@ -135,7 +136,8 @@ export async function publishDraft({
           metaVideoIds,
           readyVideos,
           getMetaVideoId,
-          saveMetaVideoId
+          saveMetaVideoId,
+          deleteMetaVideoId
         }));
         await lookupPublication?.(lookupGate);
       });
@@ -165,7 +167,8 @@ async function createAd({
   metaVideoIds,
   readyVideos,
   getMetaVideoId,
-  saveMetaVideoId
+  saveMetaVideoId,
+  deleteMetaVideoId
 }) {
   assertPublicationDeadline(deadlineContext);
   await report({ clientId: ad.clientId, parentClientId, type: 'ad', name: ad.name, status: 'creating' });
@@ -186,7 +189,8 @@ async function createAd({
       metaVideoIds,
       readyVideos,
       getMetaVideoId,
-      saveMetaVideoId
+      saveMetaVideoId,
+      deleteMetaVideoId
     });
     assertPublicationDeadline(deadlineContext);
     const remoteId = await metaClient.createAd(
@@ -292,7 +296,8 @@ async function createCreativeArtifact({
   metaVideoIds,
   readyVideos,
   getMetaVideoId,
-  saveMetaVideoId
+  saveMetaVideoId,
+  deleteMetaVideoId
 }) {
   assertPublicationDeadline(deadlineContext);
   const media = await getMedia(ownerMetaUserId, ad.mediaId);
@@ -314,6 +319,7 @@ async function createCreativeArtifact({
       readyVideos,
       getMetaVideoId,
       saveMetaVideoId,
+      deleteMetaVideoId,
       ownerMetaUserId
     });
     return {
@@ -529,6 +535,7 @@ async function createCreativeForMedia({
   readyVideos,
   getMetaVideoId,
   saveMetaVideoId,
+  deleteMetaVideoId,
   ownerMetaUserId
 }) {
   if (media.mimeType.startsWith('image/')) {
@@ -590,7 +597,17 @@ async function createCreativeForMedia({
     thumbnailPromise = waitForVideoReady(metaClient, token, videoId, delay, deadlineContext);
     readyVideos?.set(cacheKey, thumbnailPromise);
   }
-  const thumbnail = await thumbnailPromise;
+  let thumbnail;
+  try {
+    thumbnail = await thumbnailPromise;
+  } catch (error) {
+    if (error?.code === 'META_VIDEO_PROCESSING_FAILED') {
+      metaVideoIds?.delete(cacheKey);
+      readyVideos?.delete(cacheKey);
+      await deleteMetaVideoId(ownerMetaUserId, media.id, accountId, videoId);
+    }
+    throw error;
+  }
   assertPublicationDeadline(deadlineContext);
   const creativeId = await createCreativeWithRetry({
     metaClient,
@@ -662,7 +679,9 @@ async function waitForVideoReady(metaClient, token, videoId, delay, deadlineCont
       };
     }
     if (status === 'error') {
-      throw new Error('Meta không xử lý được video');
+      const error = new Error('Meta không xử lý được video');
+      error.code = 'META_VIDEO_PROCESSING_FAILED';
+      throw error;
     }
   }
 }
