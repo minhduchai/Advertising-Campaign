@@ -512,7 +512,7 @@ test('uses a fixed ASCII-only Blob pathname for Vietnamese and mojibaked file na
   assert.doesNotMatch(uploadImpl.pathname, /[^\x00-\x7F]/);
 });
 
-test('uploads an ad video to Meta in resumable chunks without Blob', async () => {
+test('requires R2 for ad video uploads and does not use Meta chunk fallback', async () => {
   const requests = [];
   const api = createApiClient(async (url, options = {}) => {
     requests.push({ url: String(url), options });
@@ -534,20 +534,26 @@ test('uploads an ad video to Meta in resumable chunks without Blob', async () =>
   const file = new File(['abcdefgh'], 'creative.mp4', { type: 'video/mp4' });
   const progress = [];
 
-  const result = await api.uploadAdMedia(file, 'act_1', {
-    chunkSize: 4,
-    onProgress: ({ percentage }) => progress.push(percentage)
-  });
+  await assert.rejects(
+    api.uploadAdMedia(file, 'act_1', {
+      onProgress: ({ percentage }) => progress.push(percentage)
+    }),
+    /R2 chưa sẵn sàng/
+  );
+  assert.deepEqual(progress, []);
+  assert.deepEqual(requests.map(({ url }) => url), ['/api/r2-media/presign']);
+});
 
-  assert.equal(result.asset.videoId, 'video-1');
-  assert.deepEqual(progress, [50, 100]);
-  assert.deepEqual(requests.map(({ url }) => url), [
-    '/api/r2-media/presign',
-    '/api/meta-media/video/start',
-    '/api/meta-media/video/transfer?accountId=act_1',
-    '/api/meta-media/video/transfer?accountId=act_1',
-    '/api/meta-media/video/finish'
-  ]);
+test('requires R2 for image uploads and does not use Meta fallback', async () => {
+  const requests = [];
+  const api = createApiClient(async (url, options = {}) => {
+    requests.push({ url: String(url), options });
+    return Response.json({ asset: { kind: 'image', imageHash: 'hash-1' } }, { status: 201 });
+  });
+  const file = new File(['image'], 'creative.jpg', { type: 'image/jpeg' });
+
+  await assert.rejects(api.uploadAdMedia(file, 'act_1'), /R2 chưa sẵn sàng/);
+  assert.deepEqual(requests.map(({ url }) => url), ['/api/r2-media/presign']);
 });
 
 test('forwards progress from the Blob entry to Vercel upload', () => {

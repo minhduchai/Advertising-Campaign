@@ -184,68 +184,10 @@ export function createApiClient(fetchImpl = fetch, { storage = globalThis.localS
     uploadMedia
   };
 
-  async function uploadAdMedia(file, accountId, { onProgress, chunkSize = 4 * 1024 * 1024 } = {}) {
+  async function uploadAdMedia(file, _accountId, { onProgress } = {}) {
     const r2Upload = await tryR2Upload(file, onProgress);
     if (r2Upload) return r2Upload;
-    if (!accountId) throw new Error('Chọn tài khoản quảng cáo trước khi tải media');
-    if (file.type.startsWith('image/')) {
-      const response = await fetchImpl(`/api/meta-media/image?accountId=${encodeURIComponent(accountId)}`, {
-        method: 'POST',
-        headers: {
-          'content-type': file.type,
-          'x-file-name': encodeURIComponent(file.name)
-        },
-        body: file
-      });
-      const payload = await readJson(response);
-      if (!response.ok) throw requestError(response.status, payload);
-      onProgress?.({ loaded: file.size, total: file.size, percentage: 100 });
-      return payload;
-    }
-    if (!file.type.startsWith('video/')) throw new Error('Chỉ hỗ trợ ảnh hoặc video');
-
-    const started = await json('/api/meta-media/video/start', postJson({
-      accountId,
-      name: file.name,
-      mimeType: file.type,
-      sizeBytes: file.size
-    }));
-    let startOffset = started.startOffset;
-    let endOffset = started.endOffset;
-    while (startOffset !== endOffset) {
-      const requestedEnd = Math.min(endOffset, startOffset + chunkSize, file.size);
-      const chunk = file.slice(startOffset, requestedEnd, 'application/octet-stream');
-      const response = await fetchImpl(
-        `/api/meta-media/video/transfer?accountId=${encodeURIComponent(accountId)}`,
-        {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/octet-stream',
-            'x-file-name': encodeURIComponent(file.name),
-            'x-upload-session-id': started.uploadSessionId,
-            'x-start-offset': String(startOffset)
-          },
-          body: chunk
-        }
-      );
-      const payload = await readJson(response);
-      if (!response.ok) throw requestError(response.status, payload);
-      startOffset = payload.startOffset;
-      endOffset = payload.endOffset;
-      onProgress?.({
-        loaded: startOffset,
-        total: file.size,
-        percentage: Math.min(100, Math.round((startOffset / file.size) * 100))
-      });
-    }
-    return json('/api/meta-media/video/finish', postJson({
-      accountId,
-      name: file.name,
-      mimeType: file.type,
-      sizeBytes: file.size,
-      uploadSessionId: started.uploadSessionId,
-      videoId: started.videoId
-    }));
+    throw new Error('R2 chưa sẵn sàng để nhận media; không thể tải media trực tiếp lên Meta');
   }
 
   async function tryR2Upload(file, onProgress, xhrFactory) {
