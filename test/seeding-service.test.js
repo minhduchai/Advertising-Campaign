@@ -595,7 +595,7 @@ test('returns the pending available_at delay when no job can be claimed', async 
   assert.equal(fixture.calls.comments.length, 0);
 });
 
-test('creates a public state summary without tokens or Blob URLs', () => {
+test('creates a public state summary without tokens or private media fields', () => {
   const run = runFixture();
   run.accessToken = 'run-secret';
   const jobs = [
@@ -607,7 +607,7 @@ test('creates a public state summary without tokens or Blob URLs', () => {
       message: 'Comment 2',
       status: 'pending',
       error: {
-        message: 'Fetch https://private.blob.vercel-storage.com/image.jpg?token=secret failed',
+        message: 'Fetch https://signed-r2.example/image.jpg?token=secret failed',
         accessToken: 'job-secret',
         nested: { blobUrl: 'blob:https://app/private' }
       }
@@ -630,7 +630,7 @@ test('creates a public state summary without tokens or Blob URLs', () => {
     'id', 'campaignClientId', 'pageId', 'postId', 'position', 'message',
     'imageMediaId', 'status', 'metaCommentId', 'error'
   ]);
-  assert.doesNotMatch(JSON.stringify(state), /run-secret|job-secret|vercel-storage|blob:https|token=secret/);
+  assert.doesNotMatch(JSON.stringify(state), /run-secret|job-secret|blob:https|token=secret/);
   assert.deepEqual(state.conflicts, []);
   assert.equal(state.waitingPostCount, 0);
 });

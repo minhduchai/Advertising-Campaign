@@ -1,6 +1,7 @@
 import {
   AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
+  CopyObjectCommand,
   CreateMultipartUploadCommand,
   DeleteObjectCommand,
   GetObjectCommand,
@@ -30,11 +31,34 @@ export function createR2MediaStore({ config, db, client, signUrl = getSignedUrl 
 
   return {
     enforceStorageLimit,
-    async createMultipartUpload({ ownerMetaUserId, mediaId, name, mimeType, sizeBytes }) {
+    async preserveSeedingMedia({ ownerMetaUserId, id }) {
+      const media = await db.getMedia(ownerMetaUserId, id);
+      if (!media) throw mediaError('Media not found', 404);
+      if (!media.blobUrl?.startsWith('r2://')) return media;
+      if (media.blobPathname?.startsWith('Seeding/')) return media;
+      if (!media.blobPathname?.startsWith('ads/')) throw mediaError('Invalid seeding media path', 400);
+      const key = `Seeding/${media.blobPathname.slice(4)}`;
+      await s3.send(new CopyObjectCommand({
+        Bucket: config.r2BucketName,
+        Key: key,
+        CopySource: `${config.r2BucketName}/${media.blobPathname.split('/').map(encodeURIComponent).join('/')}`
+      }));
+      const head = await s3.send(new HeadObjectCommand({ Bucket: config.r2BucketName, Key: key }));
+      if (Number(head.ContentLength) !== media.sizeBytes || head.ContentType !== media.mimeType) {
+        throw mediaError('Seeding media copy verification failed', 502);
+      }
+      // Keep the original until lifecycle expiry; existing signed URLs may still use it.
+      const updated = await db.updateMediaLocation(ownerMetaUserId, id, media.blobUrl, `r2://${config.r2BucketName}/${key}`, key);
+      if (updated) return updated;
+      const current = await db.getMedia(ownerMetaUserId, id);
+      if (current?.blobPathname === key) return current;
+      throw mediaError('Media changed during seeding preservation', 409);
+    },
+    async createMultipartUpload({ ownerMetaUserId, mediaId, name, mimeType, sizeBytes, purpose = 'ads' }) {
       requireSupportedMedia(mimeType, sizeBytes);
       requireMediaId(mediaId);
       await enforceStorageLimit();
-      const key = multipartMediaKey({ ownerMetaUserId, mediaId, name, mimeType });
+      const key = multipartMediaKey({ ownerMetaUserId, mediaId, name, mimeType, purpose });
       const created = await s3.send(new CreateMultipartUploadCommand({
         Bucket: config.r2BucketName,
         Key: key,
@@ -88,10 +112,10 @@ export function createR2MediaStore({ config, db, client, signUrl = getSignedUrl 
       }));
       return { mediaId, uploadId, key, aborted: true };
     },
-    async presignUpload({ ownerMetaUserId, mediaId, name, mimeType, sizeBytes }) {
+    async presignUpload({ ownerMetaUserId, mediaId, name, mimeType, sizeBytes, purpose = 'ads' }) {
       requireSupportedMedia(mimeType, sizeBytes);
       requireMediaId(mediaId);
-      const key = multipartMediaKey({ ownerMetaUserId, mediaId, name, mimeType });
+      const key = multipartMediaKey({ ownerMetaUserId, mediaId, name, mimeType, purpose });
       await enforceStorageLimit();
       const uploadUrl = await signUrl(s3, new PutObjectCommand({ Bucket: config.r2BucketName, Key: key, ContentType: mimeType }), { expiresIn: 900 });
       return { mediaId, key, uploadUrl };
@@ -123,6 +147,8 @@ export function createR2MediaStore({ config, db, client, signUrl = getSignedUrl 
     },
     async deleteTemporaryMedia(media) {
       if (!media?.blobUrl?.startsWith('r2://') || !media.blobPathname) return;
+      // Persistent seeding media must survive every publishing cleanup path.
+      if (media.blobPathname.startsWith('Seeding/')) return;
       await s3.send(new DeleteObjectCommand({ Bucket: config.r2BucketName, Key: media.blobPathname }));
       await db.deleteMedia(media.ownerMetaUserId, media.id, media.blobUrl);
     }
@@ -191,9 +217,10 @@ async function cleanupR2Objects({ s3, config, db, now }) {
     remainingBytes: totalBytes - deletedBytes, aboveLimit: totalBytes - deletedBytes > thresholdBytes };
 }
 
-function multipartMediaKey({ ownerMetaUserId, mediaId, name, mimeType }) {
+function multipartMediaKey({ ownerMetaUserId, mediaId, name, mimeType, purpose = 'ads' }) {
+  if (!['ads', 'seeding'].includes(purpose)) throw mediaError('Invalid media purpose', 400);
   const ownerSegment = ownerPathSegment(ownerMetaUserId);
-  return `ads/${ownerSegment}/${mediaId}/${safeFileName(name, mimeType)}`;
+  return `${purpose === 'seeding' ? 'Seeding' : 'ads'}/${ownerSegment}/${mediaId}/${safeFileName(name, mimeType)}`;
 }
 
 function requireMultipartPath({ ownerMetaUserId, mediaId, key, name, mimeType }) {
@@ -201,10 +228,10 @@ function requireMultipartPath({ ownerMetaUserId, mediaId, key, name, mimeType })
   const ownerSegment = ownerPathSegment(ownerMetaUserId);
   const path = String(key ?? '');
   const segments = path.split('/');
-  if (segments.length !== 4 || segments[0] !== 'ads') throw mediaError('R2 upload path is invalid', 400);
+  if (segments.length !== 4 || !['ads', 'Seeding'].includes(segments[0])) throw mediaError('R2 upload path is invalid', 400);
   if (segments[1] !== ownerSegment) throw mediaError('R2 multipart upload does not belong to this session', 403);
   if (segments[2] !== mediaId || !segments[3]) throw mediaError('R2 upload path is invalid', 400);
-  if (name !== undefined && path !== multipartMediaKey({ ownerMetaUserId, mediaId, name, mimeType })) {
+  if (name !== undefined && path !== multipartMediaKey({ ownerMetaUserId, mediaId, name, mimeType, purpose: segments[0] === 'Seeding' ? 'seeding' : 'ads' })) {
     throw mediaError('R2 upload path is invalid', 400);
   }
 }

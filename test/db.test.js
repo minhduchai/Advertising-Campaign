@@ -11,6 +11,19 @@ import { validateAudienceTemplate } from '../src/audience-template.js';
 import { registerDatabaseContract } from './database-contract.js';
 
 const SHARED_LIBRARY_OWNER_ID = '__shared_conversation_library__';
+
+test('media relocation preserves ID and requires both owner and previous URL', () => {
+  const db = createDatabase(':memory:');
+  try {
+    const old = 'r2://bucket/ads/owner/media/a.jpg';
+    const key = 'Seeding/owner/media/a.jpg';
+    db.saveMedia({ id: 'media', ownerMetaUserId: 'owner', name: 'a.jpg', mimeType: 'image/jpeg', sizeBytes: 10, blobUrl: old, blobPathname: 'ads/owner/media/a.jpg' });
+    assert.equal(db.updateMediaLocation('other', 'media', old, `r2://bucket/${key}`, key), null);
+    assert.equal(db.updateMediaLocation('owner', 'media', 'stale', `r2://bucket/${key}`, key), null);
+    assert.equal(db.updateMediaLocation('owner', 'media', old, `r2://bucket/${key}`, key).id, 'media');
+    assert.equal(db.getMedia('owner', 'media').blobPathname, key);
+  } finally { db.close(); }
+});
 const SHARED_LIBRARY_PAGE_ID = '__shared__';
 
 const audienceContentFixture = {

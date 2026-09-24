@@ -35,4 +35,4 @@ Primary schema: [Meta SDK TargetingGeoLocationPlace](https://github.com/facebook
 
 ## Production deployment
 
-Deployed successfully as dpl_EoR6g6NarVXHZypnMPH5p4yb8Xjv and aliased to https://creative-campaign-lgclinic.vercel.app. Public verification returned HTTP 200 for /api/health and confirmed the deployed bytes of all six changed browser JavaScript assets match the local files. Full test suite: 790 passed. Exact authenticated Saved Audience verification remains pending as described above.
+Deployed successfully to https://advertisingserver.tailac4f15.ts.net. Public verification returned HTTP 200 for /api/health and confirmed the deployed bytes of all six changed browser JavaScript assets match the local files. Full test suite: 790 passed. Exact authenticated Saved Audience verification remains pending as described above.

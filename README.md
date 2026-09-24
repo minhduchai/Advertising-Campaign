@@ -26,8 +26,8 @@ Preset hiện tại chỉ hỗ trợ quảng cáo **Cuộc trò chuyện trên M
 - Mọi người dùng đã kết nối Meta dùng chung một thư viện mẫu; ai cũng có thể tạo, cập nhật, nhân bản và xóa mẫu. Quảng cáo mới luôn bắt đầu với `Mặc định (trống)` và chỉ điền nội dung khi người dùng chủ động chọn mẫu.
 - Mỗi Ad giữ một snapshot riêng của mẫu. Cập nhật mẫu nguồn không tự thay đổi các Ad đã cấu hình.
 - Creative ảnh và video gửi `page_welcome_message` dạng Visual Editor cùng nội dung snapshot.
-- Media quảng cáo được tải trực tiếp vào thư viện của tài khoản quảng cáo trên Meta; bản nháp chỉ giữ `image_hash` hoặc `video_id`, không lưu ảnh/video quảng cáo trong Vercel Blob.
-- Vercel Blob chỉ giữ ảnh seeding cần dùng lại khi đăng bình luận. Đổi tài khoản quảng cáo của một Campaign sẽ yêu cầu chọn lại media cho Campaign đó.
+- Media quảng cáo được tải vào Cloudflare R2 qua application server; bản nháp chỉ giữ `image_hash` hoặc `video_id`, không lưu ảnh/video quảng cáo trong cơ sở dữ liệu.
+- Cloudflare R2 giữ ảnh seeding cần dùng lại khi đăng bình luận. Đổi tài khoản quảng cáo của một Campaign sẽ yêu cầu chọn lại media cho Campaign đó.
 - Validation theo đường dẫn field trước khi cho phép gửi dữ liệu sang Meta.
 
 ## Yêu cầu
@@ -85,7 +85,7 @@ Biểu mẫu hỗ trợ Messenger button template với nội dung tối đa 640
 - Mỗi `postId` chỉ seeding một lần. Nếu nhiều ads cùng trỏ về cùng một `postId`, hệ thống gom lại và không lặp bình luận.
 - Hàng đợi seeding chạy tuần tự từng item, chờ tự nhiên khoảng 3–5 giây giữa các lần gọi Meta để giảm rủi ro bị đánh giá là spam.
 - Khi reload hoặc khôi phục tiến trình, hệ thống tiếp tục từ trạng thái còn lại. Item đã rơi vào `needs_review` sẽ không tự retry để tránh tạo comment trùng.
-- Ảnh comment có thể lưu cục bộ khi soạn thảo, nhưng Meta chỉ nhận URL HTTPS khi tạo comment ảnh. Ở production, tool cấp URL HTTPS ký sẵn, có thời hạn từ Vercel Blob để Meta tải ảnh; ảnh không cần công khai vĩnh viễn.
+- Ảnh comment có thể lưu cục bộ khi soạn thảo, nhưng Meta chỉ nhận URL HTTPS khi tạo comment ảnh. Ở production, application server cấp URL HTTPS ký sẵn, có thời hạn từ Cloudflare R2 để Meta tải ảnh; ảnh không cần công khai vĩnh viễn.
 - Để người dùng ngoài app dùng được seeding, Facebook Login for Business gắn với `META_LOGIN_CONFIG_ID` phải bật `pages_manage_engagement` và app phải có Advanced Access / App Review cho quyền này.
 - Người dùng cũ phải bấm **Kết nối lại Meta** để lấy token mới có thêm quyền `pages_manage_engagement`.
 - Page phải xuất hiện trong `/me/accounts` với Page access token và task `MODERATE` thì mới comment bằng Page được. Page chỉ có quyền quảng cáo vẫn tạo Ads được, nhưng không comment được bằng Page.

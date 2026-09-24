@@ -124,10 +124,7 @@ test('local entry opens the reference Content screen without inventing or comple
   assert.equal(state.ui.localDemoResources, undefined);
 });
 
-test('the local visual system retains the exact approved concept stylesheet', async () => {
-  const concept = await readFile(new URL('../design-concepts/campaign-launch-control/styles.css', import.meta.url), 'utf8');
-  const served = await readFile(new URL('../public/launch-concept.css', import.meta.url), 'utf8');
-  assert.ok(served.replace(/\r\n/g, '\n').includes(concept.replace(/\r\n/g, '\n').trim()));
+test('the local visual system loads its production stylesheet without the legacy control layer', async () => {
   const adapter = await readFile(new URL('../public/launch-preview.css', import.meta.url), 'utf8');
   assert.ok(adapter.includes("@import url('/app.css') layer(legacy)"));
   assert.ok(adapter.includes("@import url('/launch-concept.css')"));

@@ -13,22 +13,8 @@ export const testConfig = () => ({
   databasePath: ':memory:',
   isProduction: false,
   databaseUrl: '',
-  blobReadWriteToken: '',
   mediaUploadMode: 'local'
 });
-
-export const productionEnvironment = {
-  META_APP_ID: 'test-app-id',
-  META_APP_SECRET: 'test-app-secret',
-  META_LOGIN_CONFIG_ID: 'test-login-config-id',
-  META_REDIRECT_URI: 'https://example.invalid/api/auth/meta/callback',
-  META_API_VERSION: 'v25.0',
-  TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
-  SESSION_SECRET: 'test-session-secret',
-  NODE_ENV: 'production',
-  DATABASE_URL: 'postgresql://example.invalid/app',
-  BLOB_READ_WRITE_TOKEN: 'test-blob-token'
-};
 
 export async function request(server, path, options = {}) {
   if (!server.listening) {

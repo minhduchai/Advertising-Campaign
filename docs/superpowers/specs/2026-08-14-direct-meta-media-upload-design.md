@@ -1,5 +1,7 @@
 # Thiết kế tải media trực tiếp lên Meta
 
+> Tài liệu lịch sử, đã được thay thế ngày 21/09/2026. Media quảng cáo hiện bắt buộc đi qua Cloudflare R2; publisher truyền `file_url` có chữ ký để Meta tự tải. Các route browser-to-Meta, forward chunk và fallback upload chia mảnh không còn tồn tại.
+
 ## Mục tiêu
 
 Ảnh và video dùng để tạo quảng cáo không được lưu vào Vercel Blob. Blob chỉ tiếp tục lưu ảnh seeding cần dùng lại.
@@ -24,4 +26,3 @@
 - Lỗi upload giữ nguyên file trong trình duyệt để người dùng chọn tải lại.
 - Phiên video lỗi không được ghi vào bản nháp.
 - F5 sau khi upload thành công vẫn dùng được asset vì bản nháp lưu ID Meta và URL thumbnail.
-

@@ -50,7 +50,7 @@ test('creates a report snapshot without browser previews or private media locati
     name: 'creative.mov',
     mimeType: 'video/quicktime',
     sizeBytes: 176898426,
-    blobUrl: 'https://private.blob.vercel-storage.com/creative.mov',
+    blobUrl: 'r2://bucket/creative.mov',
     content: Buffer.from('private')
   }]]);
 
@@ -73,7 +73,7 @@ test('creates a report snapshot without browser previews or private media locati
     sizeBytes: 176898426
   });
   const serialized = JSON.stringify(snapshot);
-  assert.doesNotMatch(serialized, /private-preview|vercel-storage|private/);
+  assert.doesNotMatch(serialized, /private-preview|r2:\/\/bucket|private/);
   assert.equal(snapshot.campaigns[0].adSets[0].ads[0].conversation.greeting, 'Xin chào');
 });
 
@@ -105,8 +105,8 @@ test('creates an immutable v3 seeding snapshot without media storage details', (
     id: 'media-1',
     name: 'before-after.jpg',
     content: Buffer.from('private'),
-    blobUrl: 'https://private.blob.vercel-storage.com/before-after.jpg',
-    blobDownloadUrl: 'https://private.blob.vercel-storage.com/download',
+    blobUrl: 'r2://bucket/before-after.jpg',
+    blobDownloadUrl: 'https://signed-r2.example/download',
     blobPathname: 'private/before-after.jpg',
     sourceUrl: 'https://example.test/private-source'
   }]]);
@@ -125,7 +125,7 @@ test('creates an immutable v3 seeding snapshot without media storage details', (
       imageName: 'before-after.jpg'
     }]
   });
-  assert.doesNotMatch(JSON.stringify(snapshot), /private-preview|vercel-storage|private-source/);
+  assert.doesNotMatch(JSON.stringify(snapshot), /private-preview|r2:\/\/bucket|signed-r2|private-source/);
 });
 
 test('does not copy an untrusted draft image name when seeding metadata is missing', () => {

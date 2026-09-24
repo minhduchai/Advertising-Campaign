@@ -1,6 +1,5 @@
 // Tài nguyên chỉ tải lại khi người dùng bấm "Làm mới dữ liệu" hoặc khi tool tự sửa (CRUD) đúng loại đó.
 const CACHED_GET_PREFIXES = [
-  '/api/resources',
   '/api/ad-account-resources',
   '/api/audience-templates',
   '/api/conversation-templates',
@@ -190,11 +189,12 @@ export function createApiClient(fetchImpl = fetch, { storage = globalThis.localS
     throw new Error('R2 chưa sẵn sàng để nhận media; không thể tải media trực tiếp lên Meta');
   }
 
-  async function tryR2Upload(file, onProgress, xhrFactory) {
+  async function tryR2Upload(file, onProgress, xhrFactory, purpose = 'ads') {
     const response = await fetchImpl('/api/r2-media/presign', postJson({
       name: file.name,
       mimeType: file.type,
-      sizeBytes: file.size
+      sizeBytes: file.size,
+      purpose
     }));
     if (response.status === 404) return null;
     const signed = await readJson(response);
@@ -206,7 +206,8 @@ export function createApiClient(fetchImpl = fetch, { storage = globalThis.localS
       key: signed.key,
       name: file.name,
       mimeType: file.type,
-      sizeBytes: file.size
+      sizeBytes: file.size,
+      purpose
     }));
   }
 
@@ -247,7 +248,7 @@ export function createApiClient(fetchImpl = fetch, { storage = globalThis.localS
     return readNdjson(response, onEvent);
   }
 
-  async function uploadMedia(file, { mode, uploadImpl, onProgress, xhrFactory } = {}) {
+  async function uploadMedia(file, { mode, onProgress, xhrFactory, purpose = 'ads' } = {}) {
     if (mode === 'local') {
       if (onProgress) {
         return uploadLocalMedia(file, { onProgress, xhrFactory });
@@ -258,27 +259,12 @@ export function createApiClient(fetchImpl = fetch, { storage = globalThis.localS
     }
 
     if (mode === 'r2') {
-      const r2Upload = await tryR2Upload(file, onProgress, xhrFactory);
+      const r2Upload = await tryR2Upload(file, onProgress, xhrFactory, purpose);
       if (!r2Upload) throw new Error('R2 chưa sẵn sàng để nhận media');
       return r2Upload;
     }
 
-    const mediaId = crypto.randomUUID();
-    const uploadPrivateBlob = uploadImpl
-      ?? (await import('/blob-upload-client.js')).uploadPrivateBlob;
-    const pathname = `meta-ads/${mediaId}/${blobUploadFileName(file.name, file.type)}`;
-    const clientPayload = {
-      mediaId,
-      name: file.name,
-      mimeType: file.type,
-      size: file.size
-    };
-    const blob = await uploadPrivateBlob(pathname, file, {
-      access: 'private',
-      clientPayload,
-      onProgress
-    });
-    return json('/api/media/complete', postJson({ ...clientPayload, blob }));
+    throw new Error('Máy chủ chưa bật lưu trữ media');
   }
 }
 
@@ -473,19 +459,3 @@ async function readJson(response) {
     return {};
   }
 }
-
-function blobUploadFileName(_name, mimeType) {
-  const knownMimeExtensions = {
-    'image/jpeg': 'jpg',
-    'image/png': 'png',
-    'image/webp': 'webp',
-    'image/gif': 'gif',
-    'image/avif': 'avif',
-    'video/mp4': 'mp4',
-    'video/quicktime': 'mov',
-    'video/webm': 'webm'
-  };
-  const extension = knownMimeExtensions[mimeType];
-  return extension ? `media.${extension}` : 'media';
-}
-

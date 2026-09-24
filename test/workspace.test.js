@@ -840,7 +840,8 @@ test('groups shared tool audiences separately from read-only Meta saved audience
   assert.match(html, /Thư viện của tôi/);
   assert.match(html, /data-value="tool_audience_shared-1"/);
   assert.match(html, /data-value="tool_audience_other-account"(?![^>]*disabled)/);
-  assert.match(html, /Custom Audience tài khoản khác · Bỏ qua 1 Custom Audience/);
+  assert.match(html, /Custom Audience tài khoản khác/);
+  assert.doesNotMatch(html, /Custom Audience tài khoản khác · Bỏ qua/);
   assert.match(html, /data-value="tool_audience_global"(?![^>]*disabled)/);
   assert.match(html, /Meta Ads · Chỉ đọc/);
   assert.match(html, /data-value="saved_meta_1"/);

@@ -872,7 +872,9 @@ test('uploads and polls one Meta video when independent Ads reuse the same media
   let uploads = 0;
   let statusChecks = 0;
   let cacheReads = 0;
+  let mediaReads = 0;
   const saved = [];
+  const uploadedMedia = [];
 
   const result = await publishDraft({
     draft: videoDraft,
@@ -880,13 +882,25 @@ test('uploads and polls one Meta video when independent Ads reuse the same media
     runId: 'run-video-cache',
     ownerMetaUserId: 'owner-1',
     concurrency: 2,
-    getMedia: async () => ({ id: 'media-image', mimeType: 'video/mp4', name: 'video.mp4' }),
+    getMedia: async () => {
+      mediaReads += 1;
+      return {
+        id: 'media-image',
+        mimeType: 'video/mp4',
+        name: 'video.mp4',
+        sourceUrl: `https://r2.example/video.mp4?signature=fresh-${mediaReads}`
+      };
+    },
     getMetaVideoId: async () => { cacheReads += 1; return null; },
     saveMetaVideoId: async (...args) => saved.push(args),
     metaClient: {
       createCampaign: async () => 'campaign-1',
       createAdSet: async (_token, _account, params) => `set-${params.get('name')}`,
-      uploadVideo: async () => { uploads += 1; return 'video-1'; },
+      uploadVideo: async (_token, _accountId, media) => {
+        uploads += 1;
+        uploadedMedia.push(media);
+        return 'video-1';
+      },
       getVideoStatus: async () => { statusChecks += 1; return { status: { video_status: 'ready' } }; },
       createCreative: async (_token, _account, params) => `creative-${params.get('name')}`,
       createAd: async (_token, _account, params) => `ad-${params.get('name')}`
@@ -896,7 +910,9 @@ test('uploads and polls one Meta video when independent Ads reuse the same media
   assert.equal(uploads, 1);
   assert.equal(statusChecks, 1);
   assert.equal(cacheReads, 1);
+  assert.equal(mediaReads, 2);
   assert.deepEqual(saved, [['owner-1', 'media-image', 'act_1', 'video-1']]);
+  assert.deepEqual(uploadedMedia.map((media) => media.sourceUrl), ['https://r2.example/video.mp4?signature=fresh-1']);
   assert.equal(result.nodes.filter((node) => node.type === 'ad' && node.status === 'created').length, 2);
 });
 

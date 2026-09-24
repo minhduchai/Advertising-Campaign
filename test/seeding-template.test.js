@@ -13,7 +13,7 @@ test('normalizes one to ten seeding comments without Blob URLs', () => {
       message: 'Đăng ký tại https://lgclinic.vn',
       imageMediaId: 'media-1',
       imagePreviewUrl: 'blob:https://app/private-preview',
-      blobUrl: 'https://private.blob.vercel-storage.com/image.jpg',
+      blobUrl: 'r2://bucket/image.jpg',
       token: 'private-token'
     }]
   });

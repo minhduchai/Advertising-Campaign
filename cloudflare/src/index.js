@@ -8,7 +8,7 @@ export default {
       const pathname = '/api/internal/workflow/comment-unhide/tick';
       const body = '{}';
       const headers = await signedHeaders({ secret: env.WORKFLOW_SHARED_SECRET, method: 'POST', pathname, body });
-      const response = await fetch(new URL(pathname, env.VERCEL_INTERNAL_BASE_URL), {
+      const response = await fetch(new URL(pathname, env.APP_SERVER_BASE_URL), {
         method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body
       });
       if (!response.ok) throw new Error(`Comment unhide tick HTTP ${response.status}`);

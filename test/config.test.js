@@ -33,17 +33,16 @@ test('allows switching the address geocoder without changing application code', 
   assert.equal(loadConfig(validEnvironment({ PHOTON_GEOCODER_URL: ' https://geo.example/api/ ' })).photonGeocoderUrl, 'https://geo.example/api/');
 });
 
-test('production requires Neon and R2 or the legacy Blob storage', () => {
+test('production requires Neon and R2', () => {
   const environment = validEnvironment({
     NODE_ENV: 'production',
     DATABASE_URL: '',
-    BLOB_READ_WRITE_TOKEN: '',
   });
 
   assert.throws(() => loadConfig(environment), /DATABASE_URL/);
   assert.throws(
     () => loadConfig({ ...environment, DATABASE_URL: 'postgresql://example.invalid/app' }),
-    /R2 storage or BLOB_READ_WRITE_TOKEN/,
+    /R2 storage/,
   );
 });
 
@@ -51,17 +50,20 @@ test('production disables the SQLite database path', () => {
   const config = loadConfig(validEnvironment({
     NODE_ENV: 'production',
     DATABASE_URL: 'postgresql://example.invalid/app',
-    BLOB_READ_WRITE_TOKEN: 'blob-token',
+    R2_ACCOUNT_ID: 'account',
+    R2_BUCKET_NAME: 'bucket',
+    R2_ACCESS_KEY_ID: 'key',
+    R2_SECRET_ACCESS_KEY: 'secret',
+    R2_ENDPOINT: 'https://account.r2.cloudflarestorage.com',
   }));
 
   assert.equal(config.databasePath, null);
 });
 
-test('production prefers R2 when both hosted storage providers are configured', () => {
+test('production uses R2 media storage', () => {
   const config = loadConfig(validEnvironment({
     NODE_ENV: 'production',
     DATABASE_URL: 'postgresql://example.invalid/app',
-    BLOB_READ_WRITE_TOKEN: 'legacy-token',
     R2_ACCOUNT_ID: 'account',
     R2_BUCKET_NAME: 'bucket',
     R2_ACCESS_KEY_ID: 'key',

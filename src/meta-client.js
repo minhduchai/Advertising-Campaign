@@ -290,75 +290,26 @@ export function createMetaClient(config, { fetchImpl = fetch } = {}) {
     },
 
     async uploadVideo(token, accountId, media, options = {}) {
-      if (media.sourceUrl) {
-        const params = new URLSearchParams({
-          file_url: media.sourceUrl,
-          title: media.name
-        });
-        const payload = await postParams(
-          fetchImpl,
-          `${graphVideoBaseUrl}/${accountId}/advideos`,
-          token,
-          params,
-          options
-        );
-        if (!payload.id) {
-          throw new Error('Meta không trả về video ID');
-        }
-        return String(payload.id);
+      const sourceUrl = typeof media?.sourceUrl === 'string' ? media.sourceUrl.trim() : '';
+      let parsedSourceUrl;
+      try {
+        parsedSourceUrl = new URL(sourceUrl);
+      } catch {}
+      if (!parsedSourceUrl || !['http:', 'https:'].includes(parsedSourceUrl.protocol)) {
+        throw new Error('Video chưa có link nguồn R2 để Meta tải; không dùng upload chia mảnh');
       }
-      return uploadVideoResumable(
+
+      const payload = await postParams(
         fetchImpl,
         `${graphVideoBaseUrl}/${accountId}/advideos`,
         token,
-        media,
+        new URLSearchParams({ file_url: sourceUrl, title: media.name }),
         options
       );
-    },
-
-    async startVideoUpload(token, accountId, { name, sizeBytes }, options = {}) {
-      const payload = await postMultipart(fetchImpl, `${graphVideoBaseUrl}/${accountId}/advideos`, token, {
-        upload_phase: 'start',
-        file_size: sizeBytes,
-        title: name
-      }, null, options.signal);
-      if (!payload.upload_session_id || !payload.video_id) {
-        throw new Error('Meta không khởi tạo được phiên tải video');
+      if (!payload.id) {
+        throw new Error('Meta không trả về video ID');
       }
-      return {
-        uploadSessionId: String(payload.upload_session_id),
-        videoId: String(payload.video_id),
-        startOffset: parseUploadOffset(payload.start_offset, 'start_offset'),
-        endOffset: parseUploadOffset(payload.end_offset, 'end_offset')
-      };
-    },
-
-    async transferVideoChunk(token, accountId, input, options = {}) {
-      const payload = await postMultipart(fetchImpl, `${graphVideoBaseUrl}/${accountId}/advideos`, token, {
-        upload_phase: 'transfer',
-        start_offset: input.startOffset,
-        upload_session_id: input.uploadSessionId
-      }, {
-        name: 'video_file_chunk',
-        content: input.content,
-        fileName: input.name
-      }, options.signal);
-      return {
-        startOffset: parseUploadOffset(payload.start_offset, 'start_offset'),
-        endOffset: parseUploadOffset(payload.end_offset, 'end_offset')
-      };
-    },
-
-    async finishVideoUpload(token, accountId, input, options = {}) {
-      const payload = await postMultipart(fetchImpl, `${graphVideoBaseUrl}/${accountId}/advideos`, token, {
-        upload_phase: 'finish',
-        upload_session_id: input.uploadSessionId,
-        title: input.name
-      }, null, options.signal);
-      if (payload.success !== true) {
-        throw new Error('Meta không xác nhận hoàn tất tải video');
-      }
-      return true;
+      return String(payload.id);
     },
 
     async getVideoStatus(token, videoId, options = {}) {
@@ -479,6 +430,21 @@ export function createMetaClient(config, { fetchImpl = fetch } = {}) {
       } catch {
         return { postId, permalinkUrl: fallbackUrl };
       }
+    },
+
+    // Tra đối tượng đã tạo (campaigns/adsets/ads) cùng tên dưới một đối tượng cha, để nhận lại đối tượng mà lần chạy
+    // trước tạo dở rồi bị ngắt. Chỉ trả những đối tượng khớp tên chính xác và (nếu có sinceMs) tạo sau mốc đó.
+    async findCreatedObject(token, parentId, edge, name, { sinceMs, signal } = {}) {
+      if (!['campaigns', 'adsets', 'ads'].includes(edge)) throw new Error('Loại đối tượng cần tra không hợp lệ');
+      const payload = await requestJson(fetchImpl, `${graphBaseUrl}/${parentId}/${edge}`, {
+        fields: 'id,name,created_time',
+        filtering: JSON.stringify([{ field: 'name', operator: 'EQUAL', value: String(name) }]),
+        limit: '25'
+      }, token, { signal });
+      return (payload.data ?? []).filter((item) => (
+        item?.name === name
+        && (!Number.isFinite(sinceMs) || Date.parse(item.created_time) >= sinceMs)
+      ));
     },
 
     async copyAd(token, sourceAdId, targetAdSetId, options = {}) {
@@ -696,81 +662,6 @@ async function uploadMedia(fetchImpl, url, token, media, fields = {}, { signal }
     body: formData,
     signal
   }), signal, fetchImpl.rateLimiter);
-}
-
-async function uploadVideoResumable(fetchImpl, url, token, media, { signal } = {}) {
-  const content = Buffer.isBuffer(media.content) ? media.content : Buffer.from(media.content);
-  const startPayload = await postMultipart(fetchImpl, url, token, {
-    upload_phase: 'start',
-    file_size: content.byteLength
-  }, null, signal);
-  const uploadSessionId = startPayload.upload_session_id;
-  const videoId = startPayload.video_id;
-  if (!uploadSessionId || !videoId) {
-    throw new Error('Meta không khởi tạo được phiên tải video');
-  }
-
-  let startOffset = parseUploadOffset(startPayload.start_offset, 'start_offset');
-  let endOffset = parseUploadOffset(startPayload.end_offset, 'end_offset');
-  while (startOffset !== endOffset) {
-    if (startOffset < 0 || endOffset <= startOffset || endOffset > content.byteLength) {
-      throw new Error('Meta trả về phạm vi tải video không hợp lệ');
-    }
-    const transferPayload = await postMultipart(fetchImpl, url, token, {
-      upload_phase: 'transfer',
-      start_offset: startOffset,
-      upload_session_id: uploadSessionId
-    }, {
-      name: 'video_file_chunk',
-      content: content.subarray(startOffset, endOffset),
-      fileName: media.name
-    }, signal);
-    const nextStartOffset = parseUploadOffset(transferPayload.start_offset, 'start_offset');
-    const nextEndOffset = parseUploadOffset(transferPayload.end_offset, 'end_offset');
-    if (nextStartOffset <= startOffset && nextStartOffset !== nextEndOffset) {
-      throw new Error('Meta không cập nhật tiến độ tải video');
-    }
-    startOffset = nextStartOffset;
-    endOffset = nextEndOffset;
-  }
-
-  const finishPayload = await postMultipart(fetchImpl, url, token, {
-    upload_phase: 'finish',
-    upload_session_id: uploadSessionId,
-    title: media.name
-  }, null, signal);
-  if (finishPayload.success !== true) {
-    throw new Error('Meta không xác nhận hoàn tất tải video');
-  }
-  return String(videoId);
-}
-
-async function postMultipart(fetchImpl, url, token, fields, file, signal) {
-  const formData = new FormData();
-  for (const [key, value] of Object.entries(fields)) {
-    formData.set(key, String(value));
-  }
-  if (file) {
-    formData.set(
-      file.name,
-      new Blob([file.content], { type: 'application/octet-stream' }),
-      file.fileName
-    );
-  }
-  return sendWithThrottleRetry(() => fetchImpl(url, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${token}` },
-    body: formData,
-    signal
-  }), signal, fetchImpl.rateLimiter);
-}
-
-function parseUploadOffset(value, field) {
-  const offset = Number(value);
-  if (!Number.isSafeInteger(offset)) {
-    throw new Error(`Meta không trả về ${field} hợp lệ`);
-  }
-  return offset;
 }
 
 async function readPayload(response) {

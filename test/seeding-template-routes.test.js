@@ -5,10 +5,10 @@ import { createDatabase } from '../src/db.js';
 import { encryptToken, signSession } from '../src/crypto.js';
 import { request, testConfig } from './helpers.js';
 
-function connectedFixture() {
+function connectedFixture(mediaStore) {
   const config = testConfig();
   const database = createDatabase(':memory:');
-  const server = createServer({ config, db: database, metaClient: {} });
+  const server = createServer({ config, db: database, metaClient: {}, ...(mediaStore ? { mediaStore } : {}) });
   return {
     database,
     server,
@@ -32,6 +32,29 @@ function jsonOptions(cookie, method, body = {}) {
     body: JSON.stringify(body)
   };
 }
+
+test('saving seeding templates preserves owned media and blocks saves when copying fails', async context => {
+  const preserved = [];
+  let fail = false;
+  const fixture = connectedFixture({ preserveSeedingMedia: async input => {
+    if (fail) throw new Error('copy failed');
+    preserved.push(input);
+  } });
+  context.after(() => fixture.server.close());
+  const cookie = fixture.connect('owner');
+  saveMedia(fixture.database, { id: 'seed', ownerMetaUserId: 'owner' });
+  const input = { name: 'Seed', items: [{ id: 'item', message: 'Hello', imageMediaId: 'seed' }] };
+  const created = await request(fixture.server, '/api/seeding-templates', jsonOptions(cookie, 'POST', input));
+  assert.equal(created.status, 201);
+  assert.deepEqual(preserved, [{ ownerMetaUserId: 'owner', id: 'seed' }]);
+  const updated = await request(fixture.server, `/api/seeding-templates/${created.body.template.id}`, jsonOptions(cookie, 'PUT', input));
+  assert.equal(updated.status, 200);
+  assert.equal(preserved.length, 2);
+  fail = true;
+  const rejected = await request(fixture.server, '/api/seeding-templates', jsonOptions(cookie, 'POST', input));
+  assert.equal(rejected.status, 500);
+  assert.equal(fixture.database.listSeedingTemplates('owner').length, 1);
+});
 
 function rawJsonOptions(cookie, method, body) {
   return {

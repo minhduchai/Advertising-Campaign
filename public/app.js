@@ -4133,6 +4133,7 @@ async function uploadSeedingImage(selection) {
   try {
     const result = await api.uploadMedia(file, {
       mode: state.resources.mediaUploadMode ?? 'local',
+      purpose: 'seeding',
       onProgress: (event) => updateSeedingUploadProgress(uploadKey, requestId, event)
     });
     if (!isCurrentSeedingUpload(uploadKey, requestId)) {

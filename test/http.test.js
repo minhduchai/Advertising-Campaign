@@ -109,10 +109,10 @@ test('requires an explicitly injected database', () => {
   );
 });
 
-test('rejects Vercel Blob mode even with an explicitly injected media store', () => {
+test('rejects hosted media mode in the local-only server', () => {
   assert.throws(
     () => createServer({
-      config: { ...testConfig(), mediaUploadMode: 'vercel-blob' },
+      config: { ...testConfig(), mediaUploadMode: 'r2' },
       metaClient: {},
       db: {},
       mediaStore: {}

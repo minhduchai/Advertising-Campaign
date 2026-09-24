@@ -9,7 +9,6 @@ import { validateDraft } from './draft.js';
 import { validateConversation } from './conversation.js';
 import { normalizeMetaConversationVariables } from '../public/conversation.js';
 import { publishDraft } from './publisher.js';
-import { handleBlobUpload } from './blob-upload.js';
 import { MAX_MEDIA_BYTES } from './media-store.js';
 import { acceptsRunStream, startRunStream, writeRunEvent } from './run-stream.js';
 import { createRunExecutionDraft, createRunSnapshot } from './run-report.js';
@@ -38,10 +37,12 @@ import { normalizeCampaignPresetInput } from './campaign-preset.js';
 import { verifyWorkflowRequest, workflowAuthInput, WORKFLOW_MAX_CLOCK_SKEW_MS } from './workflow-auth.js';
 import {
   createWorkflowExecutionPlan,
+  workflowStepLogLine,
   WORKFLOW_PUBLISH_BATCH_SIZE,
   WORKFLOW_PUBLICATION_BATCH_SIZE,
   WORKFLOW_SEEDING_BATCH_SIZE
 } from './workflow-plan.js';
+import { prepareWorkflowMedia } from './workflow-media.js';
 import { createWorkflowDispatcher } from './workflow-dispatcher.js';
 import { createTelegramUploadAuth } from './telegram-upload-auth.js';
 import { createMetaRequestCache } from './meta-request-cache.js';
@@ -49,7 +50,7 @@ import { createAddressGeocoder } from './address-geocoder.js';
 
 const projectDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const publicDirectory = resolve(projectDirectory, 'public');
-const publicFiles = new Set(['/draft-storage.js', '/app.css', '/launch-control.css', '/app.js', '/api.js', '/api-client.js', '/activity-history.js', '/audience.js', '/blob-upload-client.js', '/conversation.js', '/local-demo-resources.js', '/run-progress.js', '/seeding.js', '/seeding-runner.js', '/state.js', '/telegram-upload-client.js', '/theme.js', '/website-tracking.js', '/workspace.js', '/workspace-progress.js', '/workspace-view.js']);
+const publicFiles = new Set(['/draft-storage.js', '/app.css', '/launch-control.css', '/app.js', '/api.js', '/api-client.js', '/activity-history.js', '/audience.js', '/conversation.js', '/local-demo-resources.js', '/run-progress.js', '/seeding.js', '/seeding-runner.js', '/state.js', '/telegram-upload-client.js', '/theme.js', '/website-tracking.js', '/workspace.js', '/workspace-progress.js', '/workspace-view.js']);
 publicFiles.add('/launch-preview.js');
 publicFiles.add('/quick-create.js');
 publicFiles.add('/quick-create.css');
@@ -65,10 +66,8 @@ publicFiles.add('/data-deletion.html');
 publicFiles.add('/vendor/leaflet/leaflet.js');
 publicFiles.add('/vendor/leaflet/leaflet.css');
 const maxLocalMediaRequestBytes = MAX_MEDIA_BYTES + 1024 * 1024;
-const MAX_DIRECT_IMAGE_BYTES = 4 * 1024 * 1024;
-const MAX_DIRECT_VIDEO_CHUNK_BYTES = 4 * 1024 * 1024;
 export const PUBLISH_DEADLINE_MS = 240_000;
-// Cloudflare Workflow cắt fetch sang Vercel ở ~100s (524), nên mỗi bước phải trả về trước đó:
+// Cloudflare Workflow cắt fetch sang application server ở ~100s (524), nên mỗi bước phải trả về trước đó:
 // không bắt đầu node mới sau SOFT, hủy hẳn ở HARD.
 export const WORKFLOW_STEP_SOFT_DEADLINE_MS = 45_000;
 export const WORKFLOW_STEP_HARD_DEADLINE_MS = 95_000;
@@ -429,32 +428,12 @@ export function createRequestHandler({ config, metaClient, db, mediaStore, addre
       }
 
       if (url.pathname === '/api/seeding-templates') {
-        await handleSeedingTemplateCollection({ request, response, session, db });
+        await handleSeedingTemplateCollection({ request, response, session, db, mediaStore });
         return;
       }
 
       if (url.pathname === '/api/campaign-presets') {
         await handleCampaignPresetCollection({ request, response, session, db });
-        return;
-      }
-
-      if (url.pathname === '/api/meta-media/image' && request.method === 'POST') {
-        await handleDirectMetaImageUpload({ url, request, response, session, db, config, metaClient });
-        return;
-      }
-
-      if (url.pathname === '/api/meta-media/video/start' && request.method === 'POST') {
-        await handleDirectMetaVideoStart({ request, response, session, db, config, metaClient });
-        return;
-      }
-
-      if (url.pathname === '/api/meta-media/video/transfer' && request.method === 'POST') {
-        await handleDirectMetaVideoTransfer({ url, request, response, session, db, config, metaClient });
-        return;
-      }
-
-      if (url.pathname === '/api/meta-media/video/finish' && request.method === 'POST') {
-        await handleDirectMetaVideoFinish({ request, response, session, db, config, metaClient });
         return;
       }
 
@@ -469,6 +448,7 @@ export function createRequestHandler({ config, metaClient, db, mediaStore, addre
           response,
           session,
           db,
+          mediaStore,
           ...seedingTemplateRoute
         });
         return;
@@ -496,24 +476,6 @@ export function createRequestHandler({ config, metaClient, db, mediaStore, addre
           return;
         }
         await handleMediaUpload({ request, response, session, mediaStore });
-        return;
-      }
-
-      if (url.pathname === '/api/media/blob-token' && request.method === 'POST') {
-        if (config.mediaUploadMode !== 'vercel-blob') {
-          sendJson(response, 404, { error: 'Not found' });
-          return;
-        }
-        await handleBlobToken({ request, response, session, config });
-        return;
-      }
-
-      if (url.pathname === '/api/media/complete' && request.method === 'POST') {
-        if (config.mediaUploadMode !== 'vercel-blob') {
-          sendJson(response, 404, { error: 'Not found' });
-          return;
-        }
-        await handleBlobCompletion({ request, response, session, mediaStore });
         return;
       }
 
@@ -706,118 +668,6 @@ async function handleResourceDiscovery({ response, session, db, config, metaClie
       telegramNetworkUpload: canUseTelegramNetworkUpload(config, session.metaUserId)
     }
   });
-}
-
-async function directMetaToken({ response, session, db, config }) {
-  const connection = await getConnectedMetaConnection({ response, session, db });
-  return connection
-    ? decryptToken(connection.accessTokenCiphertext, config.tokenEncryptionKey)
-    : null;
-}
-
-async function handleDirectMetaImageUpload({ url, request, response, session, db, config, metaClient }) {
-  const token = await directMetaToken({ response, session, db, config });
-  if (!token) return;
-  const accountId = url.searchParams.get('accountId');
-  if (!isAdAccountId(accountId)) {
-    sendJson(response, 400, { error: 'Tài khoản quảng cáo không hợp lệ' });
-    return;
-  }
-  const mimeType = String(request.headers['content-type'] ?? '').split(';')[0].trim();
-  if (!mimeType.startsWith('image/')) {
-    sendJson(response, 415, { error: 'File tải lên phải là ảnh' });
-    return;
-  }
-  const content = await readBuffer(request, MAX_DIRECT_IMAGE_BYTES);
-  const name = decodeUploadHeader(request.headers['x-file-name'], 'creative-image');
-  const imageHash = await metaClient.uploadImage(token, accountId, { name, mimeType, content });
-  sendJson(response, 201, {
-    mediaId: `meta-image-${imageHash}`,
-    kind: 'image',
-    asset: { kind: 'image', accountId, imageHash, name, mimeType, sizeBytes: content.byteLength }
-  });
-}
-
-async function handleDirectMetaVideoStart({ request, response, session, db, config, metaClient }) {
-  const token = await directMetaToken({ response, session, db, config });
-  if (!token) return;
-  const input = await readJson(request);
-  if (!isAdAccountId(input.accountId) || !isSupportedVideoInput(input)) {
-    sendJson(response, 400, { error: 'Thông tin video hoặc tài khoản quảng cáo không hợp lệ' });
-    return;
-  }
-  const started = await metaClient.startVideoUpload(token, input.accountId, {
-    name: input.name,
-    sizeBytes: input.sizeBytes
-  });
-  sendJson(response, 201, started);
-}
-
-async function handleDirectMetaVideoTransfer({ url, request, response, session, db, config, metaClient }) {
-  const token = await directMetaToken({ response, session, db, config });
-  if (!token) return;
-  const accountId = url.searchParams.get('accountId');
-  const uploadSessionId = String(request.headers['x-upload-session-id'] ?? '');
-  const startOffset = Number(request.headers['x-start-offset']);
-  if (!isAdAccountId(accountId) || !uploadSessionId || !Number.isSafeInteger(startOffset) || startOffset < 0) {
-    sendJson(response, 400, { error: 'Phiên hoặc vị trí tải video không hợp lệ' });
-    return;
-  }
-  const content = await readBuffer(request, MAX_DIRECT_VIDEO_CHUNK_BYTES);
-  if (content.byteLength === 0) {
-    sendJson(response, 400, { error: 'Gói video trống' });
-    return;
-  }
-  const result = await metaClient.transferVideoChunk(token, accountId, {
-    uploadSessionId,
-    startOffset,
-    content,
-    name: decodeUploadHeader(request.headers['x-file-name'], 'creative-video')
-  });
-  sendJson(response, 200, result);
-}
-
-async function handleDirectMetaVideoFinish({ request, response, session, db, config, metaClient }) {
-  const token = await directMetaToken({ response, session, db, config });
-  if (!token) return;
-  const input = await readJson(request);
-  if (!isAdAccountId(input.accountId) || !isSupportedVideoInput(input)
-    || typeof input.uploadSessionId !== 'string' || !input.uploadSessionId
-    || typeof input.videoId !== 'string' || !input.videoId) {
-    sendJson(response, 400, { error: 'Thông tin hoàn tất video không hợp lệ' });
-    return;
-  }
-  await metaClient.finishVideoUpload(token, input.accountId, {
-    uploadSessionId: input.uploadSessionId,
-    name: input.name
-  });
-  sendJson(response, 201, {
-    mediaId: `meta-video-${input.videoId}`,
-    kind: 'video',
-    asset: {
-      kind: 'video',
-      accountId: input.accountId,
-      videoId: input.videoId,
-      name: input.name,
-      mimeType: input.mimeType,
-      sizeBytes: input.sizeBytes
-    }
-  });
-}
-
-function isSupportedVideoInput(input) {
-  return input && typeof input.name === 'string' && input.name.trim()
-    && typeof input.mimeType === 'string' && input.mimeType.startsWith('video/')
-    && Number.isSafeInteger(input.sizeBytes) && input.sizeBytes > 0 && input.sizeBytes <= MAX_MEDIA_BYTES;
-}
-
-function decodeUploadHeader(value, fallback) {
-  if (typeof value !== 'string' || !value) return fallback;
-  try {
-    return decodeURIComponent(value).slice(0, 255) || fallback;
-  } catch {
-    return fallback;
-  }
 }
 
 async function handleAdAccountResources({ url, response, session, db, config, metaClient, metaRequestCache }) {
@@ -1293,7 +1143,7 @@ async function requireAudienceTemplateMutationAccess({ response, session, db }) 
   return connection;
 }
 
-async function handleSeedingTemplateCollection({ request, response, session, db }) {
+async function handleSeedingTemplateCollection({ request, response, session, db, mediaStore }) {
   if (!['GET', 'POST'].includes(request.method)) {
     sendJson(response, 405, { error: 'Phương thức không được hỗ trợ' });
     return;
@@ -1313,7 +1163,7 @@ async function handleSeedingTemplateCollection({ request, response, session, db 
   const normalized = await normalizeAndValidateSeedingTemplate({
     input,
     ownerMetaUserId: session.metaUserId,
-    db
+    db, mediaStore
   });
   if (normalized.errors.length > 0) {
     sendJson(response, 422, { errors: normalized.errors });
@@ -1329,7 +1179,7 @@ async function handleSeedingTemplateCollection({ request, response, session, db 
   });
 }
 
-async function handleSeedingTemplateItem({ request, response, session, db, templateId, action }) {
+async function handleSeedingTemplateItem({ request, response, session, db, mediaStore, templateId, action }) {
   const methodAllowed = action
     ? request.method === 'POST'
     : new Set(['PUT', 'DELETE']).has(request.method);
@@ -1381,7 +1231,7 @@ async function handleSeedingTemplateItem({ request, response, session, db, templ
   const normalized = await normalizeAndValidateSeedingTemplate({
     input,
     ownerMetaUserId: session.metaUserId,
-    db
+    db, mediaStore
   });
   if (normalized.errors.length > 0) {
     sendJson(response, 422, { errors: normalized.errors });
@@ -1526,7 +1376,7 @@ async function campaignPresetReferenceErrors({ db, ownerMetaUserId, content }) {
   return errors;
 }
 
-async function normalizeAndValidateSeedingTemplate({ input, ownerMetaUserId, db }) {
+async function normalizeAndValidateSeedingTemplate({ input, ownerMetaUserId, db, mediaStore }) {
   const normalized = normalizeSeedingTemplateInput(input);
   if (normalized.errors.length > 0) return normalized;
 
@@ -1548,6 +1398,9 @@ async function normalizeAndValidateSeedingTemplate({ input, ownerMetaUserId, db 
     }
     return [];
   });
+  if (!errors.length && mediaStore?.preserveSeedingMedia) {
+    for (const id of mediaIds) await mediaStore.preserveSeedingMedia({ ownerMetaUserId, id });
+  }
   return { ...normalized, errors };
 }
 
@@ -1600,48 +1453,6 @@ async function handleMediaUpload({ request, response, session, mediaStore }) {
 
   const media = await mediaStore.saveUpload({ ownerMetaUserId: session.metaUserId, file });
   sendJson(response, 201, { mediaId: media.id, kind: file.type.startsWith('image/') ? 'image' : 'video' });
-}
-
-async function handleBlobToken({ request, response, session, config }) {
-  if (!session.metaUserId) {
-    sendJson(response, 401, { error: 'Connect Meta first' });
-    return;
-  }
-
-  let body;
-  try {
-    body = await readJson(request);
-  } catch {
-    sendJson(response, 400, { error: 'Payload JSON không hợp lệ' });
-    return;
-  }
-  const result = await handleBlobUpload({
-    request,
-    body,
-    config,
-    ownerMetaUserId: session.metaUserId
-  });
-  sendJson(response, 200, result);
-}
-
-async function handleBlobCompletion({ request, response, session, mediaStore }) {
-  if (!session.metaUserId) {
-    sendJson(response, 401, { error: 'Connect Meta first' });
-    return;
-  }
-
-  let input;
-  try {
-    input = await readJson(request);
-  } catch {
-    sendJson(response, 400, { error: 'Payload JSON không hợp lệ' });
-    return;
-  }
-  const media = await mediaStore.completeUpload({ ownerMetaUserId: session.metaUserId, input });
-  sendJson(response, 201, {
-    id: media.id,
-    kind: media.mimeType.startsWith('image/') ? 'image' : 'video'
-  });
 }
 
 function matchMediaPreviewRoute(pathname) {
@@ -1947,6 +1758,14 @@ async function handleRunWorkflowResume({ response, session, db, workflowDispatch
   }
   if (run.status === 'failed' && !run.execution) {
     return sendJson(response, 200, { accepted: false, reason: 'terminal', run });
+  }
+  if (!workflowDispatcher.enabled) {
+    return sendJson(response, 409, {
+      accepted: false,
+      reason: 'workflow_disabled',
+      error: 'Workflow đang tắt; không thể khôi phục lượt tạo cũ. Hãy tạo lượt mới.',
+      run
+    });
   }
   const workflowToken = randomBytes(24).toString('hex');
   const claimed = await db.claimWorkflowLease(runId, workflowToken, Date.now(), WORKFLOW_LEASE_TTL_MS);
@@ -2313,13 +2132,20 @@ async function handleInternalWorkflowRoute({ request, response, url, config, db,
     if (request.method !== 'POST') return sendJson(response, 405, { error: 'Method not allowed' });
     return sendJson(response, 200, await tickCommentUnhide({ config, db, metaClient }));
   }
-  const match = /^\/api\/internal\/workflow\/runs\/([^/]+)\/(plan|continue|publications\/next|seeding\/prepare|seeding\/next|finalize)$/.exec(url.pathname);
+  const match = /^\/api\/internal\/workflow\/runs\/([^/]+)\/(plan|continue|media\/prepare|publications\/next|seeding\/prepare|seeding\/next|finalize)$/.exec(url.pathname);
   if (!match) return sendJson(response, 404, { error: 'Not found' });
   const runId = decodeURIComponent(match[1]);
   const action = match[2];
   if ((action === 'plan' && request.method !== 'GET') || (action !== 'plan' && request.method !== 'POST')) {
     return sendJson(response, 405, { error: 'Method not allowed' });
   }
+  // Ghi một dòng log thời lượng cho mỗi bước workflow (chỉ các trường trong danh sách cho phép, không chứa token hay link ký sẵn).
+  const stepStartedAt = Date.now();
+  const stepInfo = {};
+  const stepKey = (() => { try { return JSON.parse(body || '{}').stepKey ?? null; } catch { return null; } })();
+  response.once('finish', () => {
+    console.log(workflowStepLogLine({ runId, action, stepKey, status: response.statusCode, ms: Date.now() - stepStartedAt, ...stepInfo }));
+  });
   const run = await db.getRun(runId);
   if (!run) return sendJson(response, 404, { error: 'Run not found' });
   const workflowToken = String(request.headers['x-workflow-token'] ?? '').trim();
@@ -2336,6 +2162,31 @@ async function handleInternalWorkflowRoute({ request, response, url, config, db,
   const connection = await db.getConnection(run.ownerMetaUserId);
   if (!connection) return sendJson(response, 409, { error: 'Meta connection not found' });
   const token = decryptToken(connection.accessTokenCiphertext, config.tokenEncryptionKey);
+
+  if (action === 'media/prepare') {
+    const draft = run.execution;
+    if (!draft) return sendJson(response, 409, { error: 'Run does not contain an execution draft' });
+    const prepared = await prepareWorkflowMedia({
+      runId,
+      ownerMetaUserId: run.ownerMetaUserId,
+      draft,
+      existingNodes: run.nodes,
+      token,
+      metaClient,
+      getMedia: (mediaId) => mediaStore.getMedia({ ownerMetaUserId: run.ownerMetaUserId, id: mediaId }),
+      getMetaVideoId: (ownerMetaUserId, mediaId, adAccountId) => db.getMetaVideoId(ownerMetaUserId, mediaId, adAccountId),
+      saveMetaVideoId: (ownerMetaUserId, mediaId, adAccountId, metaVideoId) => (
+        db.saveMetaVideoId(ownerMetaUserId, mediaId, adAccountId, metaVideoId)
+      ),
+      deleteMetaVideoId: (ownerMetaUserId, mediaId, adAccountId, metaVideoId) => (
+        db.deleteMetaVideoId(ownerMetaUserId, mediaId, adAccountId, metaVideoId)
+      ),
+      updateNodeResult: (targetRunId, node) => db.updateNodeResult(targetRunId, node),
+      stopStartingAt: Date.now() + WORKFLOW_STEP_SOFT_DEADLINE_MS
+    });
+    Object.assign(stepInfo, { pending: prepared.pending, ready: prepared.ready, total: prepared.total });
+    return sendJson(response, 200, prepared);
+  }
 
   if (action === 'continue') {
     const draft = run.execution;
@@ -2385,6 +2236,9 @@ async function handleInternalWorkflowRoute({ request, response, url, config, db,
       onlyAdClientIds: retryingAd ? retryAdClientIds : null,
       deadlineAt: Date.now() + WORKFLOW_STEP_HARD_DEADLINE_MS,
       stopStartingAt: Date.now() + WORKFLOW_STEP_SOFT_DEADLINE_MS,
+      // Quá mốc cứng thì trả deadlineHit để workflow làm tiếp, không trả lỗi 500 làm tiêu hao lượt thử.
+      onDeadline: 'return',
+      runStartedAt: run.createdAt,
       getMedia: async (ownerMetaUserId, mediaId) => {
         if (String(ownerMetaUserId) !== String(run.ownerMetaUserId)) return null;
         return mediaAssets.get(mediaId) ?? mediaStore.getMedia({ ownerMetaUserId, id: mediaId });
@@ -2400,7 +2254,13 @@ async function handleInternalWorkflowRoute({ request, response, url, config, db,
       ),
       onNodeUpdate: (targetRunId, node) => db.updateNodeResult(targetRunId, node)
     });
-    return sendJson(response, 200, { status: result.complete ? 'ads_created' : 'creating', complete: result.complete, attempted: result.attempted });
+    Object.assign(stepInfo, { attempted: result.attempted, complete: result.complete, deadlineHit: Boolean(result.deadlineHit) });
+    return sendJson(response, 200, {
+      status: result.complete ? 'ads_created' : 'creating',
+      complete: result.complete,
+      attempted: result.attempted,
+      ...(result.deadlineHit ? { deadlineHit: true } : {})
+    });
   }
 
   if (action === 'publications/next') {
@@ -2465,21 +2325,34 @@ async function handleInternalWorkflowRoute({ request, response, url, config, db,
   await db.updateRunStatus(runId, status);
   if (workflowToken) await db.releaseWorkflowLease(runId, workflowToken);
   if (mediaStore.deleteTemporaryMedia) {
-    const mediaIds = new Set();
-    const completedAdIds = new Set(finalRun.nodes
-      .filter((node) => node.type === 'ad' && node.remoteId)
-      .map((node) => String(node.clientId)));
-    for (const campaign of finalRun.execution?.campaigns ?? []) {
-      for (const adSet of campaign.adSets ?? []) for (const ad of adSet.ads ?? []) {
-        if (!ad.mediaAsset && completedAdIds.has(String(ad.clientId))) mediaIds.add(ad.mediaId);
-      }
-      for (const item of campaign.seeding?.items ?? []) if (item.imageMediaId) mediaIds.add(item.imageMediaId);
-    }
-    // Metadata only: mediaStore.getMedia would download every blob just to delete it.
-    const media = await Promise.all([...mediaIds].map((id) => db.getMedia(run.ownerMetaUserId, id).catch(() => null)));
+    const mediaIds = collectWorkflowCleanupMediaIds(finalRun);
+    // Metadata only: mediaStore.getMedia would fetch every object just to delete it.
+    const media = await Promise.all(mediaIds.map((id) => db.getMedia(run.ownerMetaUserId, id).catch(() => null)));
     await Promise.allSettled(media.filter(Boolean).map((item) => mediaStore.deleteTemporaryMedia(item)));
   }
   return sendJson(response, 200, { status, terminal: true });
+}
+
+export function collectWorkflowCleanupMediaIds(finalRun) {
+  const protectedSeedingMediaIds = new Set(
+    (finalRun?.execution?.campaigns ?? []).flatMap((campaign) => (
+      (campaign.seeding?.items ?? []).map((item) => String(item.imageMediaId ?? '')).filter(Boolean)
+    ))
+  );
+  const completedAdIds = new Set((finalRun?.nodes ?? [])
+    .filter((node) => node.type === 'ad' && node.remoteId)
+    .map((node) => String(node.clientId)));
+  const mediaIds = new Set();
+  for (const campaign of finalRun?.execution?.campaigns ?? []) {
+    for (const adSet of campaign.adSets ?? []) for (const ad of adSet.ads ?? []) {
+      if (
+        !ad.mediaAsset
+        && completedAdIds.has(String(ad.clientId))
+        && !protectedSeedingMediaIds.has(String(ad.mediaId ?? ''))
+      ) mediaIds.add(ad.mediaId);
+    }
+  }
+  return [...mediaIds];
 }
 
 async function handleRunCreation({ request, response, session, db, config, metaClient, mediaStore, workflowDispatcher }) {
@@ -2561,6 +2434,9 @@ async function handleRunCreation({ request, response, session, db, config, metaC
           }]
         });
         return;
+      }
+      if (mediaStore.preserveSeedingMedia) {
+        media = await mediaStore.preserveSeedingMedia({ ownerMetaUserId: session.metaUserId, id: item.imageMediaId });
       }
       selectedSeedingMedia.set(item.imageMediaId, media);
     }
@@ -2803,7 +2679,7 @@ async function handleR2Presign({ request, response, session, mediaStore }) {
   if (!mediaStore.r2) return sendJson(response, 404, { enabled: false });
   const input = await readJson(request);
   const mediaId = randomBytes(16).toString('hex');
-  const signed = await mediaStore.r2.presignUpload({ ownerMetaUserId: session.metaUserId, mediaId, name: input.name, mimeType: input.mimeType, sizeBytes: input.sizeBytes });
+  const signed = await mediaStore.r2.presignUpload({ ownerMetaUserId: session.metaUserId, mediaId, name: input.name, mimeType: input.mimeType, sizeBytes: input.sizeBytes, purpose: input.purpose });
   sendJson(response, 200, { enabled: true, ...signed });
 }
 

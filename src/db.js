@@ -468,6 +468,14 @@ export function createSqliteDatabase(path) {
       return this.getMedia(media.ownerMetaUserId, id);
     },
 
+    updateMediaLocation(ownerMetaUserId, id, expectedUrl, blobUrl, blobPathname) {
+      const row = database.prepare(`
+        UPDATE media SET blob_url = ?, blob_pathname = ?, blob_download_url = NULL
+        WHERE owner_meta_user_id = ? AND id = ? AND blob_url = ? RETURNING *
+      `).get(blobUrl, blobPathname, ownerMetaUserId, id, expectedUrl);
+      return row ? mapMedia(row) : null;
+    },
+
     getMedia(ownerMetaUserId, id) {
       if (!ownerMetaUserId || !id) {
         throw new TypeError('getMedia requires ownerMetaUserId and id');

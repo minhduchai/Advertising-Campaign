@@ -1,11 +1,47 @@
 # Tên miền production
 
-Website người dùng và callback Meta dùng `https://creative-campaign-lgclinic.vercel.app`.
+Website người dùng và callback Meta dùng `https://advertisingserver.tailac4f15.ts.net`.
 
-`vercel deploy --prod --yes` hiện chỉ tự cập nhật alias dài `creative-campaign-lgclinic-ducndna-5064s-projects.vercel.app`. Không được coi việc deploy xong là tên miền chính đã được cập nhật.
+Application chạy bằng systemd service `campaignbuilder` trên Ubuntu và khởi động từ `src/hosted-server.js`. Deploy bằng:
 
-Sau mỗi lần deploy, kiểm tra `vercel alias ls`. Nếu tên miền chính chưa trỏ tới deployment vừa tạo, chạy `vercel alias set <deployment-url-vừa-tạo> creative-campaign-lgclinic.vercel.app`.
+```powershell
+Set-Location 'D:\Advertising-Campaign'
+.\scripts\deploy-server.ps1
+```
 
-Xác minh trên tên miền chính: phiên bản script trong HTML, `/health`, `/api/auth/session` và thao tác trình duyệt liên quan tới thay đổi. Dùng đường link chính khi gửi kết quả cho người dùng.
+Sau mỗi lần deploy, xác minh `/api/health`, `/api/auth/session`, file JavaScript liên quan và thao tác trình duyệt vừa thay đổi. Không deploy lại nền tảng serverless cũ.
 
-Ngày 07/09/2026 đã cập nhật tên miền chính sang deployment `creative-campaign-lgclinic-2rdlb2gwn-ducndna-5064s-projects.vercel.app`. Trước đó tên miền còn trỏ vào bản cũ không có tự lưu. Đã kiểm tra trình duyệt trên tài khoản có phiên Meta: nhập tên bản nháp, tải lại, tên bản nháp và trạng thái kết nối vẫn còn.
+## Lưu media seeding trên R2
+
+Bucket `creative-campaign-temp-media` dùng hai prefix phân biệt hoa/thường:
+
+- `ads/`: media quảng cáo, rule `delete-temp-media-after-1-day` xóa sau 1 ngày.
+- `Seeding/`: media seeding lưu lâu dài, không có rule expiration. App cũng
+  không xóa prefix này khi dọn media sau lượt tạo.
+
+Upload seeding gửi `purpose: 'seeding'`. Khi lưu mẫu hoặc tạo lượt quảng cáo,
+app chuyển media seeding cũ từ `ads/` sang `Seeding/`: copy, kiểm tra file rồi
+đổi đường dẫn trong DB, giữ nguyên media ID. Bản gốc giữ lại cho URL đang dùng
+và được lifecycle dọn sau đó.
+
+Trước khi bật rule `ads/` trên bản cũ, deploy code rồi chạy trên server:
+
+```sh
+node --env-file=/home/campaignadmin/.config/campaignbuilder/app.env scripts/migrate-seeding-media-r2.js
+```
+
+Script bảo vệ media được tham chiếu bởi mẫu seeding, job và snapshot/execution
+của lượt tạo; báo riêng file đã mất. Bản nháp chỉ trong trình duyệt chưa nằm
+trong các nguồn này cần được mở và lưu thành mẫu trước khi file hết hạn.
+
+Giữ `Default Multipart Abort Rule` để hủy upload multipart chưa hoàn tất sau
+7 ngày; rule này không xóa file đã upload hoàn tất. Ngoài lifecycle, app dọn
+media quảng cáo theo vòng đời lượt tạo và file dư theo ngưỡng dung lượng.
+File đã bị expiration
+xóa trước đó cần được tải lại rồi lưu vào mẫu.
+
+Kiểm tra cấu hình thực tế từ thư mục `cloudflare`:
+
+```powershell
+npx wrangler r2 bucket lifecycle list creative-campaign-temp-media
+```

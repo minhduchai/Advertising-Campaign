@@ -1,0 +1,66 @@
+BOT TELEGRAM GỬI FILE VÀ TẢI FILE LÊN ỨNG DỤNG
+
+1. Hai chức năng được tách riêng
+
+- Chat Telegram thông thường:
+  Dán trực tiếp đường dẫn file hoặc dùng /get. Bot vẫn xếp hàng và gửi file về Telegram như trước.
+
+- Tải file vào ứng dụng:
+  Dán đường dẫn ổ chung ngay trong ứng dụng rồi bấm "Tải từ ổ chung". Bot trên máy công ty tự nhận việc, đọc file và tải lên ứng dụng. Không cần mở Telegram và không phải dán đường dẫn lần hai.
+
+2. Cách dùng tải vào ứng dụng
+
+1) Mở mẫu quảng cáo trên ứng dụng.
+2) Dán đường dẫn file trong ổ mạng vào ô bên dưới vùng chọn media, ví dụ:
+   \\192.168.1.6\marketing\CHUNG\MEDIA\VIDEO FINAL\video.mp4
+3) Bấm "Tải từ ổ chung".
+4) Chờ trạng thái "Bot máy công ty đang tải file". Ứng dụng hiển thị số MB và phần trăm sau mỗi phần 8 MB được Cloudflare xác nhận thành công. Bot tải tối đa 4 phần song song; phần gặp lỗi tạm thời sẽ tự thử lại riêng tối đa 3 lần, chờ 2, 4 rồi 8 giây.
+5) File sẽ tự xuất hiện trong mẫu quảng cáo khi tải xong.
+
+Không cần mở cửa sổ Telegram. Các yêu cầu từ app được xếp hàng và bot xử lý lần lượt.
+
+3. Cách dùng bot Telegram thông thường
+
+- Dán đường dẫn file: bot gửi file vào Telegram.
+- Dán đường dẫn thư mục: bot hiện danh sách và các nút chọn file.
+- /get <đường dẫn file>: gửi file vào Telegram.
+- /ls <đường dẫn thư mục>: xem thư mục.
+- /status: kiểm tra bot và ổ mạng.
+- /whoami: xem User ID và Chat ID.
+
+Trong group, các lệnh quản trị vẫn bị khóa với nhân viên theo cấu hình hiện tại. Nhân viên chỉ cần dán đường dẫn file để nhận file trong group.
+
+4. Cấu hình trên máy công ty
+
+File C:\TelegramFileBot\.env cần giữ các dòng:
+
+BOT_TOKEN=token_bot_thật
+ALLOWED_USER_ID=1643641244
+ALLOWED_GROUP_IDS=-5409953650
+FILE_ROOT=\\192.168.1.6\marketing
+BOT_API_BASE=http://127.0.0.1:8081
+APP_URL=https://creative-campaign-lgclinic.vercel.app
+TELEGRAM_UPLOAD_WORKER_SECRET=khóa_worker_trùng_với_Vercel
+
+Không cần Upload Agent và không cần Node.js trên máy công ty.
+
+5. Cấu hình Cloudflare R2
+
+Các biến R2_ACCOUNT_ID, R2_BUCKET_NAME, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY và R2_ENDPOINT phải đặt trên Vercel của ứng dụng. Không cần đặt các khóa R2 trong file .env của bot.
+
+6. Khởi động lại bot sau khi cập nhật
+
+Với gói cập nhật mới:
+
+1) Giải nén toàn bộ file ZIP.
+2) Nhấp chuột phải "CAP-NHAT-BOT.cmd" và chọn Run as administrator.
+3) Trình cập nhật chép mã mới, giữ nguyên .env và khởi động lại Task Scheduler nếu đã có. Không tự thêm khóa kết nối và không sao lưu .env.
+4) Gửi /status trong Telegram.
+
+Nếu cần làm thủ công trong Task Scheduler:
+
+1) Mở Task Scheduler.
+2) Chọn "Telegram Company File Bot".
+3) Bấm End nếu trạng thái đang Running.
+4) Bấm Run.
+5) Nhắn /status trong Telegram để kiểm tra.

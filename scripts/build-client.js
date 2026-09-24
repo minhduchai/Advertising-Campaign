@@ -10,21 +10,11 @@ await Promise.all([
   cp('node_modules/leaflet/LICENSE', 'public/vendor/leaflet/LICENSE')
 ]);
 
-await Promise.all([
-  build({
-    entryPoints: ['src/client/blob-upload-entry.js'],
-    outfile: 'public/blob-upload-client.js',
-    bundle: true,
-    platform: 'browser',
-    format: 'esm',
-    minify: true
-  }),
-  build({
+await build({
     entryPoints: ['public/telegram-upload-client.js'],
     bundle: true,
     write: false,
     platform: 'browser',
     format: 'esm',
     minify: true
-  })
-]);
+  });

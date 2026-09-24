@@ -641,7 +641,7 @@ test('keeps a persistent seeding failure alert above the activity report', () =>
     snapshot: { version: 3, campaigns: [] }, nodes: [],
     seeding: {
       jobs: [
-        { postId: 'post-1', status: 'failed', error: { message: 'Vercel Blob upload bị từ chối' } },
+        { postId: 'post-1', status: 'failed', error: { message: 'R2 upload bị từ chối' } },
         { postId: 'post-2', status: 'needs_review', error: { message: 'Cần kiểm tra quyền Page' } }
       ]
     }
@@ -652,7 +652,7 @@ test('keeps a persistent seeding failure alert above the activity report', () =>
   assert.match(html, /Seeding cần xử lý/);
   assert.match(html, /1 bình luận thất bại/);
   assert.match(html, /1 bình luận cần kiểm tra/);
-  assert.match(html, /Vercel Blob upload bị từ chối/);
+  assert.match(html, /R2 upload bị từ chối/);
 });
 
 test('filters report rows to one campaign and renders escaped node diagnostics', () => {

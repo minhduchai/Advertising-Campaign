@@ -32,11 +32,21 @@ export async function publishDraft({
   onlyAdClientIds = null,
   getMetaVideoId = async () => null,
   saveMetaVideoId = async () => {},
-  deleteMetaVideoId = async () => {}
+  deleteMetaVideoId = async () => {},
+  // 'throw' (mặc định): quá mốc cứng thì ném PublicationDeadlineError. 'return': đưa node dở về retry_pending rồi trả
+  // { complete: false, deadlineHit: true } để workflow làm tiếp ở lần gọi sau thay vì coi là lỗi.
+  onDeadline = 'throw',
+  // Mốc bắt đầu lượt chạy (ms). Chỉ dùng khi nhận lại đối tượng đã tạo dở: đối tượng cũ hơn mốc này không bao giờ bị nhận nhầm.
+  runStartedAt = null
 }) {
   const deadlineContext = { deadlineAt, now, signal };
   assertPublicationDeadline(deadlineContext);
   const nodes = existingNodes.map((node) => ({ ...node }));
+  // Node còn `creating` từ lần chạy trước nghĩa là yêu cầu tạo bị ngắt giữa chừng (mất mạng, khởi động lại): Meta có thể đã tạo rồi.
+  const interruptedClientIds = new Set(nodes.filter((node) => node.status === 'creating').map((node) => String(node.clientId)));
+  const adopt = (clientId, parentId, edge, name) => adoptInterruptedNode({
+    interruptedClientIds, clientId, runStartedAt, metaClient, token, parentId, edge, name, deadlineContext
+  });
   const creativeArtifacts = seedCreativeArtifacts(draft, nodes);
   const metaVideoIds = new Map();
   const readyVideos = new Map();
@@ -66,7 +76,7 @@ export async function publishDraft({
     return node;
   };
 
-  await runAll(draft.campaigns, (campaign) => campaignGate(async () => {
+  const publishAll = () => runAll(draft.campaigns, (campaign) => campaignGate(async () => {
     let campaignResult = terminalNode(nodes, campaign.clientId);
     if (!campaignResult) {
       campaignResult = await claim(() => createNode({
@@ -75,12 +85,13 @@ export async function publishDraft({
         name: campaign.name,
         type: 'campaign',
         deadlineContext,
-        create: () => metaClient.createCampaign(
-          token,
-          campaign.adAccountId,
-          buildCampaignParams(campaign),
-          publicationOptions(deadlineContext)
-        )
+        create: async () => (await adopt(campaign.clientId, campaign.adAccountId, 'campaigns', campaign.name))
+          ?? metaClient.createCampaign(
+            token,
+            campaign.adAccountId,
+            buildCampaignParams(campaign),
+            publicationOptions(deadlineContext)
+          )
       }));
       if (!campaignResult) return;
     }
@@ -100,12 +111,13 @@ export async function publishDraft({
           name: adSet.name,
           type: 'adSet',
           deadlineContext,
-          create: () => metaClient.createAdSet(
-            token,
-            campaign.adAccountId,
-            buildConversationAdSetParams(campaignResult.remoteId, campaign, adSet),
-            publicationOptions(deadlineContext)
-          )
+          create: async () => (await adopt(adSet.clientId, campaignResult.remoteId, 'adsets', adSet.name))
+            ?? metaClient.createAdSet(
+              token,
+              campaign.adAccountId,
+              buildConversationAdSetParams(campaignResult.remoteId, campaign, adSet),
+              publicationOptions(deadlineContext)
+            )
         }));
         if (!adSetResult) return;
       }
@@ -137,16 +149,74 @@ export async function publishDraft({
           readyVideos,
           getMetaVideoId,
           saveMetaVideoId,
-          deleteMetaVideoId
+          deleteMetaVideoId,
+          adopt
         }));
         await lookupPublication?.(lookupGate);
       });
     });
   }));
 
-  await cleanupUnusedPublicPosts(creativeArtifacts, metaClient, report, deadlineContext);
+  let deadlineHit = false;
+  try {
+    await publishAll();
+    await cleanupUnusedPublicPosts(creativeArtifacts, metaClient, report, deadlineContext);
+  } catch (error) {
+    if (onDeadline !== 'return' || !isPublicationDeadlineError(error)) throw error;
+    deadlineHit = true;
+    await releaseInterruptedNodes(nodes, report);
+  }
 
-  return { id: runId, nodes, complete: !bounded && draftIsComplete(draft, nodes), attempted: newNodes };
+  return {
+    id: runId,
+    nodes,
+    complete: !bounded && !deadlineHit && draftIsComplete(draft, nodes),
+    attempted: newNodes,
+    ...(deadlineHit ? { deadlineHit: true } : {})
+  };
+}
+
+// Mốc cứng chỉ ngắt ở các điểm kiểm tra trước/sau lời gọi Meta (lời gọi đang bay vẫn ghi node `created` trước khi kiểm tra),
+// nên node còn `creating` lúc này chưa được tạo trên Meta: đưa về retry_pending để giao diện và lần chạy sau xử lý.
+async function releaseInterruptedNodes(nodes, report) {
+  for (const node of nodes.filter((entry) => entry.status === 'creating')) {
+    await report({
+      clientId: node.clientId,
+      parentClientId: node.parentClientId ?? null,
+      type: node.type,
+      name: node.name,
+      status: 'retry_pending'
+    });
+  }
+}
+
+// Nhận lại đối tượng mà lần chạy trước có thể đã tạo trên Meta trước khi bị ngắt, để không tạo trùng.
+// Chỉ nhận khi CHÍNH XÁC 1 đối tượng cùng tên (server đã lọc theo created_time >= mốc bắt đầu lượt chạy).
+async function adoptInterruptedNode({
+  interruptedClientIds,
+  clientId,
+  runStartedAt,
+  metaClient,
+  token,
+  parentId,
+  edge,
+  name,
+  deadlineContext
+}) {
+  const key = String(clientId);
+  if (!interruptedClientIds.has(key)) return null;
+  interruptedClientIds.delete(key);
+  if (!Number.isFinite(runStartedAt) || typeof metaClient.findCreatedObject !== 'function') return null;
+  try {
+    const matches = await metaClient.findCreatedObject(token, parentId, edge, name, {
+      sinceMs: runStartedAt - 60_000,
+      ...publicationOptions(deadlineContext)
+    });
+    return matches.length === 1 && matches[0]?.id ? String(matches[0].id) : null;
+  } catch (error) {
+    if (publicationDeadlineError(error, deadlineContext) || isMetaThrottleError(error)) throw error;
+    return null;
+  }
 }
 
 async function createAd({
@@ -168,12 +238,19 @@ async function createAd({
   readyVideos,
   getMetaVideoId,
   saveMetaVideoId,
-  deleteMetaVideoId
+  deleteMetaVideoId,
+  adopt = async () => null
 }) {
   assertPublicationDeadline(deadlineContext);
   await report({ clientId: ad.clientId, parentClientId, type: 'ad', name: ad.name, status: 'creating' });
   let artifact = null;
   try {
+    const adoptedAdId = await adopt(ad.clientId, adSetId, 'ads', ad.name);
+    if (adoptedAdId) {
+      // Quảng cáo đã được tạo trước khi lượt chạy bị ngắt: không tạo lại mẫu/quảng cáo; bước đồng bộ Post ID sẽ bổ sung Post ID.
+      await report({ clientId: ad.clientId, parentClientId, type: 'ad', name: ad.name, status: 'created', remoteId: adoptedAdId });
+      return;
+    }
     artifact = await getCreativeArtifact({
       creativeArtifacts,
       ad,

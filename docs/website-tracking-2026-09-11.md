@@ -10,7 +10,7 @@ Browser QA used the actual app with synthetic local API responses: checked the o
 
 Primary references: [Meta Ad schema](https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/ad.py) and [ConversionActionQuery schema](https://github.com/facebook/facebook-python-business-sdk/blob/main/facebook_business/adobjects/conversionactionquery.py). Meta developer documentation could not be fetched during this session.
 
-Production deployment: dpl_4SpGa5VYPYLGkUzLycFFDFkmYzJX, aliased to https://creative-campaign-lgclinic.vercel.app. Verified all five changed public assets match local bytes and /api/health returns ok:true.
+Production deployment: application server at https://advertisingserver.tailac4f15.ts.net. Verified all five changed public assets match local bytes and /api/health returns ok:true.
 
 ## Fixed Pixel follow-up
 User requested the screenshot configuration be fixed for every ad: Pixel 657921569053875, website events always enabled. Shared public/website-tracking.js now defines the ID. New ads and restored local drafts adopt it; UI displays checked disabled checkbox and readonly Pixel; server ad creation and retry payloads always use this ID even for legacy or conflicting draft fields. Updated tests verify these cases; all 793 pass. This supersedes the optional selection behavior above.

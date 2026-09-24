@@ -1,0 +1,190 @@
+CHUYỂN BOT SANG WINDOWS TRỰC TIẾP — KHÔNG CẦN DOCKER
+
+Gói này dành cho máy công ty Windows 64-bit, dùng được cho cả hai trường hợp:
+- Máy đã có bot tại C:\TelegramFileBot (Docker còn sống hoặc đã chết): chuyển sang native.
+- Máy trống, không còn C:\TelegramFileBot: cài mới, cần Python 3.12 (python.org, chọn
+  Python Launcher) và Internet để tải thư viện. Không cần Docker, Visual Studio hay CMake.
+File native\telegram-bot-api.exe được biên dịch từ mã nguồn chính thức Telegram.
+
+CÀI MỚI (KHÔNG CÒN C:\TelegramFileBot)
+CHUYEN-KHONG-DOCKER.cmd tự tạo C:\TelegramFileBot, môi trường Python .venv và cài thư viện.
+Lần đầu nó tạo hai file mẫu rồi dừng: C:\TelegramFileBot\.env và docker.env.
+Mở bằng Notepad, điền rồi lưu ĐÚNG TÊN (không thành .env.txt):
+- .env: BOT_TOKEN (BotFather, /token hoặc /revoke để lấy token mới), ALLOWED_USER_ID,
+  ALLOWED_GROUP_IDS, FILE_ROOT, BOT_API_BASE=http://127.0.0.1:8081, APP_URL,
+  TELEGRAM_UPLOAD_WORKER_SECRET (trùng biến cùng tên trên Vercel; để trống thì chỉ mất
+  chức năng tải từ app).
+- docker.env: TELEGRAM_API_ID, TELEGRAM_API_HASH (my.telegram.org > API development tools).
+Chạy lại CHUYEN-KHONG-DOCKER.cmd (Run as administrator). Nếu bot cũ đã xóa nhầm khỏi ổ C,
+xem Recycle Bin trước: khôi phục được thì có sẵn .env, docker.env, không phải điền lại.
+
+THAO TÁC
+1. Đợi bot gửi xong các file đang xử lý. Hàng đợi trong bộ nhớ không được chuyển;
+   nếu còn yêu cầu chờ hoặc tin nhắn gửi đúng lúc chuyển, hãy gửi lại sau.
+2. Nếu Docker còn chạy được: giữ Docker Desktop mở trong lúc chuyển, thử /status trước.
+   Nếu Docker đã chết (bot.log toàn lỗi 127.0.0.1:8081 refused): KHÔNG cần sửa Docker,
+   bộ chuyển tự nhận ra không có API cũ ở cổng 8081 và cài bản native thẳng.
+   Không chép tay thư mục bot vào C:\TelegramFileBot; chép tay không tạo tác vụ chạy
+   Local Bot API nên bot vẫn chết.
+3. Giải nén ZIP vào thư mục riêng (ví dụ D:\TelegramBot-KhongDocker) hoặc thẳng vào
+   C:\TelegramFileBot đều được; bộ chuyển tự nhận biết và không chép đè chính nó.
+4. Nhấp phải CHUYEN-KHONG-DOCKER.cmd > Run as administrator.
+   Dùng cùng tài khoản Windows đang vận hành bot và có quyền truy cập ổ chung.
+5. Khi báo THÀNH CÔNG, thử /status, gửi một file nhỏ, rồi thử file lớn và tải từ app.
+6. Sau khi thử đạt, có thể Quit Docker Desktop. Container cũ được giữ lại nhưng đã
+   tắt tự khởi động. Không tự bật lại container khi bản native đang chạy.
+
+GIỮ CẤU HÌNH
+- .env: token bot, quyền user/group, đường dẫn ổ mạng, khóa worker và URL app giữ nguyên.
+- docker.env: vẫn giữ tên cũ để đọc API ID/API Hash; bản mới đọc file này trực tiếp,
+  không cần chương trình Docker để đọc file đó.
+- Gói không chứa token thật. Không cần đổi khóa Vercel hoặc Cloudflare khi chuyển.
+- Bản sao mã/cấu hình và XML tác vụ cũ nằm tại C:\TelegramFileBot\backup-native-THOIGIAN.
+  Thư mục backup có khóa bí mật, giữ riêng và không chia sẻ.
+
+TỰ CHẠY
+Tác vụ mới tên Telegram Company File Bot Native, chạy Python nền trực tiếp.
+Tác vụ cũ Telegram Company File Bot được giữ nguyên cấu hình và chỉ Disable.
+Một tiến trình giám sát chạy Local Bot API và bot Python; nếu tiến trình con thoát,
+nó thử chạy lại mỗi 5 giây. Nếu bộ giám sát thoát lỗi, Task Scheduler thử lại
+tối đa 10 lần, cách nhau 1 phút.
+Tự chạy sau khi đăng nhập Windows bằng tài khoản đã cài.
+Khóa màn hình được; tắt máy, sleep hoặc đăng xuất thì bot không phục vụ.
+Đây không phải cơ chế chạy trước màn hình đăng nhập.
+Không cần giữ PowerShell hay Docker Desktop mở.
+Tự khởi động lại tiến trình không đảm bảo tự sửa lỗi token, mạng hoặc cấu hình.
+
+KHỞI ĐỘNG LẠI (PowerShell)
+Stop-ScheduledTask -TaskName "Telegram Company File Bot Native"
+Start-Sleep -Seconds 2
+Start-ScheduledTask -TaskName "Telegram Company File Bot Native"
+
+KIỂM TRA
+Get-ScheduledTask -TaskName "Telegram Company File Bot Native" | Select-Object TaskName,State
+Test-NetConnection 127.0.0.1 -Port 8081
+Get-Content C:\TelegramFileBot\native-runtime.log -Tail 30
+
+Log bot: C:\TelegramFileBot\bot.log
+Log API: C:\TelegramFileBot\native-api-console.log
+Không chia sẻ log thô vì lỗi HTTP có thể chứa token.
+
+NẾU CHUYỂN BỊ LỖI
+Bộ chuyển đổi sẽ cố phục hồi mã, tác vụ cũ và chạy lại Docker (nếu lúc chuyển Docker còn sống).
+Nếu báo khôi phục chưa xong, giữ toàn bộ thư mục và gửi thông báo lỗi để kiểm tra.
+Không xóa container, volume hoặc backup trong lúc chưa xác nhận bản mới chạy tốt.
+
+Tính năng bot: giữ gửi file với caption tag tên + "Bot gửi file nha", hàng đợi,
+nút chọn file, quyền group/user và luồng tải từ app lên R2.
+Chế độ --local của Telegram cho phép upload tới 2.000 MB; giới hạn riêng của app
+và định dạng file trên app vẫn áp dụng như trước.
+
+NỘI DUNG GÓI ZIP
+- CHUYEN-KHONG-DOCKER.cmd, switch_native.py, native_runtime.py, native-task.ps1
+- bot.py, telegram_api.py, telegram_app_upload.py, path_guard.py
+- requirements.txt, .env.example, docker.env.example (cho máy cài mới)
+- KIEM-TRA-KHONG-DOCKER.cmd: xem trạng thái tác vụ, cổng 8081 và 15 dòng log cuối đã che token.
+- Gói tên có "-CO-CAU-HINH" mang sẵn .env (và docker.env nếu có) thật: bộ chuyển dùng luôn
+  nếu C:\TelegramFileBot chưa có. Gói này chứa khóa bí mật: không để trên ổ chung,
+  xóa file ZIP sau khi cài xong.
+- native\telegram-bot-api.exe, native\manifest.json (mã băm SHA-256 của từng file trong native\)
+- HUONG-DAN-KHONG-DOCKER.txt
+Thiếu file nào thì giải nén lại ZIP. Không sửa hoặc thay file trong native\;
+bộ chuyển so mã băm và từ chối chạy nếu lệch.
+
+BỘ CHUYỂN KIỂM TRA GÌ TRƯỚC KHI ĐỘNG VÀO BOT
+Theo thứ tự; dừng ngay ở bước lỗi đầu tiên, chưa thay đổi gì:
+1. Đang chạy bằng quyền Administrator.
+2. .env và docker.env hợp lệ: token, API ID/Hash, ALLOWED_USER_ID, FILE_ROOT,
+   BOT_API_BASE=http://127.0.0.1:8081.
+3. Mã băm native\ khớp manifest và telegram-bot-api.exe chạy được.
+4. Chỉ khi cổng 8081 đang mở (Docker còn sống): bot cũ trả lời getMe, không có webhook,
+   container telegram-bot-api đang Running. Cổng 8081 đóng = Docker chết, bỏ qua bước này.
+5. Tài khoản đang chạy trùng với tài khoản của tác vụ cũ; chưa có tác vụ Native.
+Qua hết mới sao lưu rồi chuyển: dừng + Disable tác vụ cũ > (nếu Docker sống: logOut
+khỏi API cũ, tắt container) > tắt tự khởi động container > chép mã + native\ >
+đăng ký tác vụ Native > chờ tối đa 45 giây cho API mới xác thực bot.
+
+THÔNG BÁO LỖI THƯỜNG GẶP
+"Can cai Python 3.12 tu python.org"
+  Máy trống chưa có Python. Cài Python 3.12, tick Python Launcher, chạy lại.
+"Cai thu vien Python that bai"
+  Không có Internet hoặc pip bị chặn. Kiểm tra mạng, chạy lại.
+"Da tao file mau C:\TelegramFileBot\.env va docker.env"
+  Chưa có cấu hình. Điền theo mục CÀI MỚI rồi chạy lại.
+"Nhan chuot phai ... Run as administrator"
+  Chưa chạy bằng quyền Administrator.
+"Thiếu cấu hình ..." / "BOT_TOKEN chưa hợp lệ" / "BOT_API_BASE phải là ..."
+  Sửa dòng tương ứng trong C:\TelegramFileBot\.env hoặc docker.env.
+"Goi native bi thieu/hong" / "Goi native thieu ma kiem tra binary"
+  ZIP giải nén thiếu, hoặc phần mềm diệt virus đã cách ly telegram-bot-api.exe
+  (file tự biên dịch, chưa ký số). Khôi phục file từ phần mềm đó, giải nén lại, chạy lại.
+"Hay chay bo chuyen doi bang dung tai khoan Windows cua tac vu bot cu"
+  Đang đăng nhập tài khoản khác với tài khoản đã cài bot. Đăng nhập đúng tài khoản.
+"Da co tac vu Native"
+  Máy đã chuyển rồi (hoặc chuyển dở). Xem Get-ScheduledTask ... Native; muốn chuyển
+  lại thì làm QUAY LẠI DOCKER THỦ CÔNG trước rồi xóa tác vụ Native.
+"Khong ket noi duoc Local Bot API"
+  Trước khi chuyển: Docker chưa mở cổng 8081. Sau khi chuyển: API mới chưa lên
+  trong 45 giây, xem native-runtime.log và native-api-console.log.
+"Local Bot API tu choi getMe (HTTP 401)"
+  Token trong .env sai hoặc đã bị thu hồi.
+"Bot dang co webhook"
+  Bot này dùng polling. Có chương trình khác đã gắn webhook cho token; kiểm tra
+  và gỡ trước khi chuyển.
+"Cong 8081 dang mo nhung khong phai container telegram-bot-api" / "Lenh docker that bai"
+  Có chương trình khác đang giữ cổng 8081, hoặc Docker CLI hỏng trong khi container
+  vẫn mở cổng. Xem Get-NetTCPConnection -LocalPort 8081 | Select-Object OwningProcess.
+"Cong 8081 van bi chiem"
+  Container đã dừng nhưng vẫn có tiến trình giữ cổng. Xem:
+  Get-NetTCPConnection -LocalPort 8081 | Select-Object OwningProcess
+"Cổng 8081 đang được sử dụng" trong native-runtime.log
+  Container cũ bị bật lại. Chạy: docker stop telegram-bot-api
+
+QUAY LẠI DOCKER THỦ CÔNG
+Chỉ khi bộ chuyển báo khôi phục chưa xong, hoặc bản mới chạy được nhưng muốn quay lại.
+PowerShell chạy bằng Administrator, cùng tài khoản; THOIGIAN là tên thư mục backup thật.
+1) Nếu bản native đang chạy, đăng xuất token khỏi API mới trước:
+  $tokenLine = Select-String -Path C:\TelegramFileBot\.env -Pattern '^BOT_TOKEN=' | Select-Object -First 1
+  $localBotToken = ($tokenLine.Line -replace '^BOT_TOKEN=','').Trim()
+  try { (Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8081/bot$localBotToken/logOut").ok } catch { Write-Host 'logOut chua thanh cong. Khong chup URL chua token.' }
+  Remove-Variable localBotToken,tokenLine
+2) Dừng bản native:
+  powershell -NoProfile -ExecutionPolicy Bypass -File C:\TelegramFileBot\native-task.ps1 -Action Stop
+3) Trả lại mã cũ (giữ nguyên .env, docker.env):
+  Copy-Item C:\TelegramFileBot\backup-native-THOIGIAN\*.py C:\TelegramFileBot\ -Force
+4) Bật lại container, trả lại chính sách tự khởi động (giá trị trong backup\restart-policy.txt):
+  docker update --restart=unless-stopped telegram-bot-api
+  docker start telegram-bot-api
+  Test-NetConnection 127.0.0.1 -Port 8081
+5) Tắt tác vụ Native, bật lại và chạy tác vụ cũ (tác vụ cũ vẫn còn nguyên, chỉ bị Disable;
+   task.xml trong backup là dự phòng nếu tác vụ cũ bị xóa):
+  powershell -NoProfile -ExecutionPolicy Bypass -File C:\TelegramFileBot\native-task.ps1 -Action Restore
+6) Thử /status. Muốn chuyển lại sau này: xóa tác vụ Native rồi chạy CHUYEN-KHONG-DOCKER.cmd:
+  Unregister-ScheduledTask -TaskName "Telegram Company File Bot Native" -Confirm:$false
+
+CẬP NHẬT BOT SAU KHI CHUYỂN
+CAP-NHAT-BOT.cmd vẫn dùng được: nó chép bot.py, native_runtime.py, native-task.ps1
+và các file bot, rồi dừng/chạy lại tác vụ Telegram Company File Bot Native (nếu tác vụ
+này đang bật; máy chưa chuyển thì vẫn dùng tác vụ cũ) nên bản native tự nhận mã mới.
+Nó KHÔNG chép thư mục native\ (telegram-bot-api.exe). Gói nào có bản exe mới thì
+dừng tác vụ, chép đè thư mục native\ vào C:\TelegramFileBot\native\, rồi chạy lại tác vụ.
+Chỉ đổi .env/docker.env xong thì chỉ cần KHỞI ĐỘNG LẠI như trên.
+
+DỮ LIỆU VÀ LOG TRÊN MÁY
+C:\TelegramFileBot\native-data\    dữ liệu của Local Bot API (tương đương volume
+                                   telegram-bot-api-data cũ; không chuyển từ Docker sang,
+                                   bot không cần dữ liệu cũ).
+C:\TelegramFileBot\native-runtime.log tự xoay vòng, tối đa 4 file x 2 MB.
+C:\TelegramFileBot\bot.log và native-api-console.log ghi nối tiếp, không tự xoay.
+Khi file lớn: dừng tác vụ, xóa hoặc đổi tên file log, chạy lại tác vụ.
+Thư mục native-data\temp có thể xóa khi tác vụ đã dừng.
+
+DỌN DOCKER SAU KHI ỔN ĐỊNH
+Chỉ làm sau vài ngày bản native chạy tốt cả gửi file lớn lẫn tải từ app.
+Giữ thư mục backup-native-THOIGIAN (có task.xml và .env) ở nơi riêng.
+  docker rm telegram-bot-api
+  docker volume rm telegram-bot-api-data
+  Unregister-ScheduledTask -TaskName "Telegram Company File Bot" -Confirm:$false
+Sau đó có thể gỡ Docker Desktop trong Settings > Apps. Bot native không phụ thuộc Docker.
+Đã gỡ Docker thì không quay lại bản cũ bằng bước QUAY LẠI DOCKER THỦ CÔNG được nữa;
+muốn quay lại phải cài theo CAI-LAI-WINDOWS.txt.

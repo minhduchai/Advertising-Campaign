@@ -4,7 +4,7 @@
 
 **Goal:** Tải banner/video quảng cáo trực tiếp lên R2, để Meta lấy file bằng URL tạm và xóa object sau khi Meta nhận thành công.
 
-**Architecture:** Vercel chỉ ký URL và xác minh metadata; byte của file đi thẳng từ trình duyệt tới bucket R2 private. Media seeding vẫn dùng Vercel Blob. Nếu R2 chưa cấu hình, client tiếp tục dùng luồng upload Meta theo chunk hiện tại.
+**Architecture:** Application server chỉ ký URL và xác minh metadata; byte của file đi thẳng từ trình duyệt tới bucket R2 private. Media seeding vẫn dùng kho media riêng. Production yêu cầu R2; Meta nhận media quảng cáo qua URL GET tạm.
 
 **Tech Stack:** Node.js ESM, Cloudflare R2 S3 API, AWS SDK v3 presigner, Vercel Functions, Meta Marketing API.
 
@@ -44,7 +44,7 @@
 - [ ] Viết test endpoint hoàn tất xác minh owner, key, MIME và kích thước trước khi lưu DB.
 - [ ] Thêm `POST /api/r2-media/presign` và `POST /api/r2-media/complete`.
 - [ ] Thêm upload XHR trực tiếp tới URL PUT để giữ phần trăm tiến độ.
-- [ ] Giữ fallback `uploadAdMedia` trực tiếp Meta khi API báo R2 chưa cấu hình.
+- [ ] Không giữ fallback upload quảng cáo trực tiếp lên Meta; khi R2 chưa cấu hình phải báo lỗi rõ ràng.
 - [ ] Chạy hai file test API liên quan.
 
 ### Task 3: Meta fetch và cleanup

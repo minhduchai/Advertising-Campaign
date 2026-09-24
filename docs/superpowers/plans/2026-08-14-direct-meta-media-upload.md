@@ -1,5 +1,7 @@
 # Direct Meta Media Upload Implementation Plan
 
+> Superseded on 2026-09-21. Ad media now requires Cloudflare R2 and passes a signed `file_url` to Meta. The direct browser-to-Meta routes, chunk forwarding, and resumable fallback were removed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Tải media quảng cáo thẳng vào Meta và không ghi media quảng cáo vào Vercel Blob.
@@ -57,4 +59,3 @@
 - [ ] Cập nhật mô tả Blob chỉ dùng cho ảnh seeding.
 - [ ] Chạy `npm test`.
 - [ ] Chạy `npm run build`.
-

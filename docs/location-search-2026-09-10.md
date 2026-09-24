@@ -1,6 +1,6 @@
 # Location search and maps — 2026-09-10
 
-Deployed to https://creative-campaign-lgclinic.vercel.app in deployment `dpl_3zNyPQxKvivrurzXdKrmgfGUgB2d`.
+Deployed to https://advertisingserver.tailac4f15.ts.net.
 
 ## User behavior
 

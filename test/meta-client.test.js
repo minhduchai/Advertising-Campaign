@@ -583,101 +583,7 @@ test('downloads an R2 image source before uploading its bytes to Meta', async ()
   assert.match(requests[1].url, /\/act_1\/adimages$/);
 });
 
-test('uploads AdVideo through the resumable graph-video protocol', async () => {
-  const requests = [];
-  const client = createMetaClient(testConfig(), {
-    fetchImpl: async (url, options) => {
-      const phase = options.body.get('upload_phase');
-      const chunk = options.body.get('video_file_chunk');
-      requests.push({
-        url: String(url),
-        phase,
-        authorization: options.headers.authorization,
-        fileSize: options.body.get('file_size'),
-        startOffset: options.body.get('start_offset'),
-        sessionId: options.body.get('upload_session_id'),
-        chunk: chunk ? await chunk.text() : null
-      });
-
-      if (phase === 'start') {
-        return Response.json({
-          upload_session_id: 'upload-session-1',
-          video_id: 'video-1',
-          start_offset: '0',
-          end_offset: '4'
-        });
-      }
-      if (phase === 'transfer' && requests.filter((request) => request.phase === 'transfer').length === 1) {
-        return Response.json({ start_offset: '4', end_offset: '10' });
-      }
-      if (phase === 'transfer') {
-        return Response.json({ start_offset: '10', end_offset: '10' });
-      }
-      return Response.json({ success: true });
-    }
-  });
-
-  const videoId = await client.uploadVideo('EAAG-token', 'act_1', {
-    name: 'creative.mov',
-    mimeType: 'video/quicktime',
-    content: Buffer.from('abcdefghij')
-  });
-
-  assert.equal(videoId, 'video-1');
-  assert.deepEqual(requests.map(({ phase }) => phase), ['start', 'transfer', 'transfer', 'finish']);
-  assert.ok(requests.every(({ url }) => url === 'https://graph-video.facebook.com/v25.0/act_1/advideos'));
-  assert.ok(requests.every(({ authorization }) => authorization === 'Bearer EAAG-token'));
-  assert.equal(requests[0].fileSize, '10');
-  assert.deepEqual(requests.slice(1, 3).map(({ startOffset, sessionId, chunk }) => ({ startOffset, sessionId, chunk })), [
-    { startOffset: '0', sessionId: 'upload-session-1', chunk: 'abcd' },
-    { startOffset: '4', sessionId: 'upload-session-1', chunk: 'efghij' }
-  ]);
-});
-
-test('exposes resumable AdVideo steps for browser chunk forwarding', async () => {
-  const phases = [];
-  const client = createMetaClient(testConfig(), {
-    fetchImpl: async (_url, options) => {
-      const phase = options.body.get('upload_phase');
-      phases.push(phase);
-      if (phase === 'start') return Response.json({
-        upload_session_id: 'session-direct',
-        video_id: 'video-direct',
-        start_offset: '0',
-        end_offset: '4'
-      });
-      if (phase === 'transfer') return Response.json({ start_offset: '4', end_offset: '4' });
-      return Response.json({ success: true });
-    }
-  });
-
-  const started = await client.startVideoUpload('TOKEN', 'act_1', {
-    name: 'direct.mov',
-    sizeBytes: 4
-  });
-  const transferred = await client.transferVideoChunk('TOKEN', 'act_1', {
-    uploadSessionId: started.uploadSessionId,
-    startOffset: started.startOffset,
-    content: Buffer.from('data'),
-    name: 'direct.mov'
-  });
-  const finished = await client.finishVideoUpload('TOKEN', 'act_1', {
-    uploadSessionId: started.uploadSessionId,
-    name: 'direct.mov'
-  });
-
-  assert.deepEqual(started, {
-    uploadSessionId: 'session-direct',
-    videoId: 'video-direct',
-    startOffset: 0,
-    endOffset: 4
-  });
-  assert.deepEqual(transferred, { startOffset: 4, endOffset: 4 });
-  assert.equal(finished, true);
-  assert.deepEqual(phases, ['start', 'transfer', 'finish']);
-});
-
-test('lets Meta fetch a hosted AdVideo from its temporary URL', async () => {
+test('uploads an AdVideo from R2 with exactly one file_url request', async () => {
   const requests = [];
   const client = createMetaClient(testConfig(), {
     fetchImpl: async (url, options) => {
@@ -685,7 +591,7 @@ test('lets Meta fetch a hosted AdVideo from its temporary URL', async () => {
       return Response.json({ id: 'video-hosted' });
     }
   });
-  const sourceUrl = 'https://private.blob.vercel-storage.com/creative.mov?signed=1';
+  const sourceUrl = 'https://signed-r2.example/creative.mov?signature=1';
 
   const videoId = await client.uploadVideo('EAAG-token', 'act_1', {
     name: 'creative.mov',
@@ -701,6 +607,60 @@ test('lets Meta fetch a hosted AdVideo from its temporary URL', async () => {
   assert.equal(body.get('file_url'), sourceUrl);
   assert.equal(body.get('title'), 'creative.mov');
   assert.equal(body.has('upload_phase'), false);
+  assert.equal(body.has('video_file_chunk'), false);
+});
+
+test('rejects an AdVideo without an R2 source URL before calling Meta', async () => {
+  let calls = 0;
+  const client = createMetaClient(testConfig(), {
+    fetchImpl: async () => {
+      calls += 1;
+      return Response.json({ id: 'unexpected' });
+    }
+  });
+
+  await assert.rejects(
+    () => client.uploadVideo('EAAG-token', 'act_1', {
+      name: 'creative.mov',
+      mimeType: 'video/quicktime'
+    }),
+    /Video chưa có link nguồn R2 để Meta tải; không dùng upload chia mảnh/
+  );
+  assert.equal(calls, 0);
+});
+
+test('normalizes an AdVideo URL error without trying another upload path', async () => {
+  let calls = 0;
+  const sourceUrl = 'https://signed-r2.example/creative.mov?signature=1';
+  const client = createMetaClient(testConfig(), {
+    fetchImpl: async () => {
+      calls += 1;
+      return Response.json({
+        error: {
+          message: 'Could not download the video from file_url',
+          type: 'OAuthException',
+          code: 100,
+          fbtrace_id: 'trace-video-url'
+        }
+      }, { status: 400 });
+    }
+  });
+
+  await assert.rejects(
+    () => client.uploadVideo('EAAG-token', 'act_1', {
+      name: 'creative.mov',
+      mimeType: 'video/quicktime',
+      sourceUrl
+    }),
+    (error) => {
+      assert.equal(error.meta?.type, 'OAuthException');
+      assert.equal(error.meta?.code, 100);
+      assert.equal(error.meta?.fbtraceId, 'trace-video-url');
+      assert.match(error.message, /Could not download the video from file_url/);
+      return true;
+    }
+  );
+  assert.equal(calls, 1);
 });
 
 test('resolves a created Ad to its Facebook Reel permalink', async () => {
@@ -809,19 +769,7 @@ test('preserves caller cancellation through every publishing Graph request', asy
       observedSignals.push(options.signal);
       const pathname = new URL(url).pathname;
       if (pathname.endsWith('/adimages')) return Response.json({ images: { creative: { hash: 'image-hash' } } });
-      if (pathname.endsWith('/advideos')) {
-        const phase = options.body.get('upload_phase');
-        if (phase === 'start') {
-          return Response.json({
-            upload_session_id: 'session-1',
-            video_id: 'video-1',
-            start_offset: '0',
-            end_offset: options.body.get('file_size')
-          });
-        }
-        if (phase === 'transfer') return Response.json({ start_offset: '5', end_offset: '5' });
-        return Response.json({ success: true });
-      }
+      if (pathname.endsWith('/advideos')) return Response.json({ id: 'video-1' });
       if (pathname.endsWith('/video-1')) return Response.json({ status: { video_status: 'ready' }, thumbnails: { data: [] } });
       if (pathname.endsWith('/photos')) return Response.json({ id: 'photo-1', post_id: 'page-1_post-1' });
       if (pathname.endsWith('/ad-publication')) {
@@ -838,11 +786,12 @@ test('preserves caller cancellation through every publishing Graph request', asy
   const options = { signal: controller.signal };
   const params = new URLSearchParams({ name: 'Paused object' });
   const media = { name: 'creative.jpg', mimeType: 'image/jpeg', content: Buffer.from('image') };
+  const videoMedia = { name: 'creative.mp4', mimeType: 'video/mp4', sourceUrl: 'https://r2.example/creative.mp4' };
 
   await client.createCampaign('token', 'act_1', params, options);
   await client.createAdSet('token', 'act_1', params, options);
   await client.uploadImage('token', 'act_1', media, options);
-  await client.uploadVideo('token', 'act_1', media, options);
+  await client.uploadVideo('token', 'act_1', videoMedia, options);
   await client.getVideoStatus('token', 'video-1', options);
   await client.createPublicPhotoPost('page-token', 'page-1', media, 'Caption', options);
   await client.deletePagePost('page-token', 'page-1_post-1', options);
@@ -851,7 +800,7 @@ test('preserves caller cancellation through every publishing Graph request', asy
   await client.getAdPublication('token', 'ad-publication', options);
   await client.copyAd('token', 'ad-source', 'adset-target', options);
 
-  assert.equal(observedSignals.length, 14);
+  assert.equal(observedSignals.length, 12);
   assert.ok(observedSignals.every((signal) => signal && !signal.aborted));
   controller.abort();
   assert.ok(observedSignals.every((signal) => signal.aborted));

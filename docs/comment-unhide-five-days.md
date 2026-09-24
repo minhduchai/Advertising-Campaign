@@ -15,7 +15,7 @@ Status: implemented locally, activation requires database access and Meta permis
 2. Run `node --env-file=.env.production.local scripts/migrate-comment-unhide.js` against the verified production database (additive table/index only).
 3. Verify the opted-in owner's Page token can read comment visibility and manage comments. No existing comments should be unhidden merely for testing.
 4. Set the two opt-in production variables, choosing an activation time at deployment.
-5. Deploy Vercel first (new signed endpoint), then Cloudflare (cron).
+5. Deploy application server first (new signed endpoint), then Cloudflare (cron).
 6. Call the signed tick once and verify job discovery/read-only scheduling; no new post is due immediately.
 
 ## Operations

@@ -34,7 +34,7 @@ try {
   const candidates = await sql`SELECT id FROM runs
     WHERE status IN ('completed', 'completed_with_errors')
       AND created_at >= ${Date.now() - 14 * 86400000}
-    ORDER BY created_at ASC LIMIT 20`;
+    ORDER BY created_at DESC LIMIT 20`;
   for (const candidate of candidates) {
     if (processed >= MAX_JOBS_PER_TICK || Date.now() - startedAt >= MAX_RUNTIME_MS) break;
     let run = await db.getRun(candidate.id);

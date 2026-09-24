@@ -1,0 +1,28 @@
+LG CAMPAIGN — BẢN KHÁCH HÀNG WINDOWS 1.0.0
+
+1. Giải nén toàn bộ ZIP vào một thư mục trên máy.
+2. Kết nối Internet. Với địa chỉ server hiện tại, quản trị viên cần cấp quyền
+   truy cập Tailscale cho máy khách nếu chưa có kết nối.
+3. Mở LG-Campaign.exe. Cần Microsoft Edge và .NET Framework 4.x trên Windows.
+4. Kết nối Meta bằng tài khoản đã được cấp quyền với Page/tài khoản quảng cáo.
+5. Có thể tạo shortcut LG-Campaign.exe trên Desktop để mở nhanh.
+
+Ứng dụng mở website trong cửa sổ Edge riêng. Database, upload và các tác vụ
+Meta được xử lý trên server; máy khách cần mạng trong khi sử dụng.
+Các cập nhật giao diện trên server sẽ xuất hiện khi tải lại ứng dụng.
+
+Nếu không kết nối được: kiểm tra Internet/Tailscale hoặc liên hệ quản trị viên.
+Nếu chưa thấy logo mới: nhấn Ctrl+F5 trong cửa sổ ứng dụng.
+Đăng xuất Meta trong ứng dụng khi dùng máy chung.
+
+BẢO VỆ MÃ VÀ DỮ LIỆU
+Gói này không chứa mã backend, database, .env, khóa Meta/R2/Telegram hay SSH.
+Chương trình mở ứng dụng đã được biên dịch và làm rối mã (obfuscation).
+Đây không phải mã hóa tuyệt đối: trình duyệt vẫn nhận HTML/JS từ server.
+Quyền truy cập và các chức năng hiển thị do server quyết định; bản client này
+không tự tạo thêm hệ thống tài khoản, bản quyền hay phân quyền khách hàng.
+
+File EXE chưa có chữ ký số của nhà phát hành. Khi phân phối rộng, nhà phát hành
+nên ký số bản phát hành. Không cần quyền quản trị để chạy chương trình.
+
+Gỡ ứng dụng: đóng cửa sổ rồi xóa thư mục đã giải nén và shortcut (nếu có).

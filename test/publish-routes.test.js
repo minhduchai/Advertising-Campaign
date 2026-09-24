@@ -3,12 +3,10 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer as createHttpServer } from 'node:http';
 import { createServer } from '../src/server.js';
-import { createVercelHandler } from '../src/vercel-runtime.js';
 import { encryptToken, signSession } from '../src/crypto.js';
-import { handleBlobUpload } from '../src/blob-upload.js';
 import * as requestHandler from '../src/request-handler.js';
 import { createApiClient } from '../public/api.js';
-import { productionEnvironment, request, testConfig } from './helpers.js';
+import { request, testConfig } from './helpers.js';
 
 const draft = {
   campaigns: [{
@@ -81,14 +79,6 @@ function validationServer(context) {
     server,
     headers: { cookie: `meta_ads_session=${encodeURIComponent(session)}` }
   };
-}
-
-function createBlobRouteServer({ db, mediaStore, metaClient = {} }) {
-  return createHttpServer(createVercelHandler(productionEnvironment, {
-    createDatabase: () => db,
-    createMediaStore: () => mediaStore,
-    createMetaClient: () => metaClient
-  }));
 }
 
 function createR2MultipartRouteServer(context, { metaUserId = 'meta-user-1', r2 } = {}) {
@@ -231,15 +221,16 @@ test('stores an owned upload and returns an opaque media id', async (context) =>
 });
 
 test('keeps the multipart media route unavailable outside local mode', async (context) => {
-  const config = { ...testConfig(), mediaUploadMode: 'vercel-blob' };
-  const server = createBlobRouteServer({
+  const config = { ...testConfig(), mediaUploadMode: 'r2' };
+  const server = createHttpServer(requestHandler.createRequestHandler({
+    config,
     db: {
       createSession: () => ({ id: 'new-session' }),
       getSession: () => ({ id: 'session-user', metaUserId: 'meta-user-1' })
     },
     mediaStore: { saveUpload: () => assert.fail('local upload must not run') },
     metaClient: {}
-  });
+  }));
   context.after(() => server.close());
 
   const session = signSession('session-user', config.sessionSecret);
@@ -275,7 +266,7 @@ test('streams an owner-scoped image preview without exposing a Blob URL', async 
           ownerMetaUserId,
           mimeType: 'image/png',
           content: Buffer.from('preview image bytes'),
-          sourceUrl: 'https://private.blob.vercel-storage.com/image.png?signed=secret'
+          sourceUrl: 'https://signed-r2.example/image.png?signature=secret'
         };
       }
     },
@@ -353,38 +344,6 @@ test('allows multipart framing overhead above the exact 500 MB file limit', () =
 
   assert.equal(requestHandler.isLocalMediaRequestTooLarge(fileLimit + 64 * 1024), false);
   assert.equal(requestHandler.isLocalMediaRequestTooLarge(fileLimit + 1024 * 1024 + 1), true);
-});
-
-test('requires a connected session for Blob token and completion routes', async (context) => {
-  const config = { ...testConfig(), mediaUploadMode: 'vercel-blob', blobReadWriteToken: 'token' };
-  const server = createBlobRouteServer({
-    db: {
-      createSession: () => ({ id: 'new-session' }),
-      getSession: () => ({ id: 'session-user', metaUserId: null })
-    },
-    mediaStore: { completeUpload: () => assert.fail('unauthenticated completion must not run') },
-    metaClient: {}
-  });
-  context.after(() => server.close());
-  const session = signSession('session-user', config.sessionSecret);
-  const headers = {
-    cookie: `meta_ads_session=${encodeURIComponent(session)}`,
-    'content-type': 'application/json'
-  };
-
-  const tokenResponse = await request(server, '/api/media/blob-token', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ type: 'blob.generate-client-token', payload: {} })
-  });
-  const completionResponse = await request(server, '/api/media/complete', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({})
-  });
-
-  assert.equal(tokenResponse.status, 401);
-  assert.equal(completionResponse.status, 401);
 });
 
 test('routes the R2 multipart lifecycle through the connected session owner', async (context) => {
@@ -504,178 +463,30 @@ test('exposes client methods for all R2 multipart operations', async () => {
   }
 });
 
-test('server preserves the validated Blob path used by the browser upload', async () => {
-  let receivedOptions;
-  const result = await handleBlobUpload({
-    request: {},
-    body: {
-      type: 'blob.generate-client-token',
-      payload: {
-        pathname: 'meta-ads/media-1/media.jpg',
-        clientPayload: JSON.stringify({
-          mediaId: 'media-1',
-          name: '../Creative Image.jpg',
-          mimeType: 'image/jpeg',
-          size: 11
-        }),
-        multipart: false
-      }
-    },
-    config: { blobReadWriteToken: 'token' },
-    ownerMetaUserId: 'meta-user-1',
-    handleUploadImpl: async (options) => {
-      receivedOptions = options;
-      const tokenOptions = await options.onBeforeGenerateToken(
-        options.body.payload.pathname,
-        options.body.payload.clientPayload
-      );
-      return { type: options.body.type, tokenOptions };
-    }
-  });
-
-  assert.equal(receivedOptions.body.payload.pathname, 'meta-ads/media-1/media.jpg');
-  assert.deepEqual(result.tokenOptions.allowedContentTypes, ['image/*', 'video/*']);
-  assert.equal(result.tokenOptions.maximumSizeInBytes, 500 * 1024 * 1024);
-  assert.equal(result.tokenOptions.addRandomSuffix, true);
-});
-
-test('server validates an ASCII-only Blob path for Vietnamese file names', async () => {
-  const result = await handleBlobUpload({
-    request: {},
-    body: {
-      type: 'blob.generate-client-token',
-      payload: {
-        pathname: 'meta-ads/media-1/media.jpg',
-        clientPayload: JSON.stringify({
-          mediaId: 'media-1',
-          name: 'CÆ¡ sá»Ÿ váº­t cháº¥t ná»¯.JPG',
-          mimeType: 'image/jpeg',
-          size: 11
-        }),
-        multipart: false
-      }
-    },
-    config: { blobReadWriteToken: 'token' },
-    ownerMetaUserId: 'meta-user-1',
-    handleUploadImpl: async (options) => ({
-      tokenOptions: await options.onBeforeGenerateToken(
-        options.body.payload.pathname,
-        options.body.payload.clientPayload
-      )
-    })
-  });
-
-  assert.equal(result.tokenOptions.addRandomSuffix, true);
-});
-
-test('server rejects Blob paths that do not match the client payload', async () => {
-  await assert.rejects(
-    handleBlobUpload({
-      request: {},
-      body: {
-        type: 'blob.generate-client-token',
-        payload: {
-          pathname: 'meta-ads/media-2/creative.jpg',
-          clientPayload: JSON.stringify({
-            mediaId: 'media-1',
-            name: 'creative.jpg',
-            mimeType: 'image/jpeg',
-            size: 11
-          }),
-          multipart: false
-        }
-      },
-      config: { blobReadWriteToken: 'token' },
-      ownerMetaUserId: 'meta-user-1',
-      handleUploadImpl: async (options) => options.onBeforeGenerateToken(
-        options.body.payload.pathname,
-        options.body.payload.clientPayload
-      )
-    }),
-    /Invalid Blob pathname/
-  );
-});
-
-test('registers completed Blob metadata for the connected owner', async (context) => {
-  const config = { ...testConfig(), mediaUploadMode: 'vercel-blob', blobReadWriteToken: 'token' };
-  let completion;
-  const server = createBlobRouteServer({
-    db: {
-      createSession: () => ({ id: 'new-session' }),
-      getSession: () => ({ id: 'session-user', metaUserId: 'meta-user-1' })
-    },
-    mediaStore: {
-      completeUpload: async (value) => {
-        completion = value;
-        return { id: value.input.mediaId, mimeType: value.input.mimeType };
-      }
-    },
-    metaClient: {}
-  });
-  context.after(() => server.close());
-  const input = {
-    mediaId: 'media-1',
-    name: 'creative.jpg',
-    mimeType: 'image/jpeg',
-    size: 11,
-    blob: { url: 'https://example.test/blob', pathname: 'meta-ads/media-1/creative.jpg' }
-  };
-  const session = signSession('session-user', config.sessionSecret);
-
-  const response = await request(server, '/api/media/complete', {
-    method: 'POST',
-    headers: {
-      cookie: `meta_ads_session=${encodeURIComponent(session)}`,
-      'content-type': 'application/json'
-    },
-    body: JSON.stringify(input)
-  });
-
-  assert.equal(response.status, 201);
-  assert.deepEqual(response.body, { id: 'media-1', kind: 'image' });
-  assert.deepEqual(completion, { ownerMetaUserId: 'meta-user-1', input });
-});
-
-test('uploads ad images directly to Meta without touching the media store', async (context) => {
+test('returns 404 for removed direct Meta media routes', async (context) => {
   const config = testConfig();
-  let uploaded;
   const server = createServer({
     config,
     db: {
       createSession: () => ({ id: 'new-session' }),
-      getSession: () => ({ id: 'session-user', metaUserId: 'meta-user-1' }),
-      getConnection: () => ({
-        accessTokenCiphertext: encryptToken('EAAG-token', config.tokenEncryptionKey)
-      })
+      getSession: () => ({ id: 'session-user', metaUserId: 'meta-user-1' })
     },
-    mediaStore: {
-      saveUpload: () => assert.fail('direct ad media must not use media storage')
-    },
-    metaClient: {
-      uploadImage: async (token, accountId, media) => {
-        uploaded = { token, accountId, media };
-        return 'meta-image-hash';
-      }
-    }
+    metaClient: {}
   });
   context.after(() => server.close());
   const session = signSession('session-user', config.sessionSecret);
 
-  const response = await request(server, '/api/meta-media/image?accountId=act_1', {
-    method: 'POST',
-    headers: {
-      cookie: `meta_ads_session=${encodeURIComponent(session)}`,
-      'content-type': 'image/jpeg',
-      'x-file-name': encodeURIComponent('creative.jpg')
-    },
-    body: Buffer.from('image-bytes')
-  });
-
-  assert.equal(response.status, 201);
-  assert.equal(response.body.asset.imageHash, 'meta-image-hash');
-  assert.equal(uploaded.token, 'EAAG-token');
-  assert.equal(uploaded.accountId, 'act_1');
-  assert.equal(uploaded.media.content.toString(), 'image-bytes');
+  for (const path of ['/api/meta-media/image?accountId=act_1', '/api/meta-media/video/start']) {
+    const response = await request(server, path, {
+      method: 'POST',
+      headers: {
+        cookie: `meta_ads_session=${encodeURIComponent(session)}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({})
+    });
+    assert.equal(response.status, 404);
+  }
 });
 
 test('publishes a valid owned draft and returns per-node creation results', async (context) => {
@@ -1184,6 +995,25 @@ test('manual workflow recovery is rejected while another workflow owns the run l
   assert.equal(response.status, 409);
   assert.match(response.body.error, /đang hoạt động/i);
   assert.equal(dispatchCalls, 0);
+});
+
+test('manual workflow recovery is rejected when Workflow is disabled', async (context) => {
+  const run = {
+    id: 'run-1', ownerMetaUserId: 'meta-user-1', status: 'creating', adAccountId: 'act_1',
+    snapshot: { version: 1, campaigns: [] }, execution: { campaigns: [] }, createdAt: 1_000, nodes: []
+  };
+  const { server, headers } = createPublishRouteServer(context, {
+    getRun: () => run,
+    config: { workflowEnabled: false }
+  });
+
+  const response = await request(server, '/api/runs/run-1/workflow/resume', {
+    method: 'POST', headers
+  });
+
+  assert.equal(response.status, 409);
+  assert.equal(response.body.reason, 'workflow_disabled');
+  assert.match(response.body.error, /Workflow đang tắt/i);
 });
 
 test('retries only one failed Ad while preserving its successful Meta parents', async (context) => {

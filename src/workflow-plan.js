@@ -1,4 +1,7 @@
-export const WORKFLOW_PUBLISH_BATCH_SIZE = 4;
+// Khớp PUBLISH_BATCH_SIZE trong cloudflare/src/publish-batch.js. Mốc mềm 45s của bước vẫn chặn việc bắt đầu node mới nếu bước chậm.
+export const WORKFLOW_PUBLISH_BATCH_SIZE = 8;
+// Bước tạo dễ gặp lỗi tạm (mạng, Meta chậm) nên cho thử lại nhiều hơn; 5 là trần Cloudflare cho phép.
+const PUBLISH_STEP_RETRY_LIMIT = 5;
 export const WORKFLOW_PUBLICATION_BATCH_SIZE = 12;
 export const WORKFLOW_SEEDING_BATCH_SIZE = 3;
 
@@ -24,6 +27,25 @@ export function createWorkflowPlan(snapshot) {
   return steps;
 }
 
+// Dòng log thời lượng cho mỗi bước workflow. Chỉ cho phép các trường bên dưới (không token, không link ký sẵn, không nội dung QC).
+const STEP_LOG_FIELDS = ['runId', 'action', 'stepKey', 'status', 'ms', 'attempted', 'complete', 'deadlineHit', 'pending', 'ready', 'total'];
+
+export function workflowStepLogLine(fields = {}) {
+  const entry = { evt: 'workflow_step' };
+  for (const key of STEP_LOG_FIELDS) {
+    const value = fields[key];
+    if (value === undefined || value === null) continue;
+    if (typeof value === 'number') {
+      if (Number.isFinite(value)) entry[key] = value;
+    } else if (typeof value === 'boolean') {
+      entry[key] = value;
+    } else {
+      entry[key] = String(value).slice(0, 120);
+    }
+  }
+  return JSON.stringify(entry);
+}
+
 export function calculateMonotonicProgress(previousPercent, steps) {
   if (!steps?.length) return Math.max(0, Number(previousPercent) || 0);
   const terminal = new Set(['succeeded', 'failed', 'skipped', 'needs_review']);
@@ -44,11 +66,16 @@ export function createWorkflowExecutionPlan(run) {
     total + adsForCampaign(campaign) * (campaign.seeding?.items?.length ?? 0)
   ), 0);
   const runPath = `/api/internal/workflow/runs/${encodeURIComponent(run.id)}`;
-  const publishSteps = numberedSteps(batchCount(nodeCount, WORKFLOW_PUBLISH_BATCH_SIZE), 'publish', `${runPath}/continue`);
+  const publishSteps = numberedSteps(batchCount(nodeCount, WORKFLOW_PUBLISH_BATCH_SIZE), 'publish', `${runPath}/continue`, 0, PUBLISH_STEP_RETRY_LIMIT);
+  // Chuẩn bị (upload + chờ xử lý) video trước khi tạo để bước tạo không phải chờ video. Máy chủ tự biết media nào là video.
+  const mediaSteps = ads.some((ad) => ad.mediaId)
+    ? [{ key: 'media:prepare', path: `${runPath}/media/prepare`, retryLimit: 3 }]
+    : [];
   const publicationSteps = numberedSteps(batchCount(publicationGroupCount, WORKFLOW_PUBLICATION_BATCH_SIZE), 'publication', `${runPath}/publications/next`);
   return {
     runId: run.id,
     steps: [
+      ...mediaSteps,
       ...interleaveRealtimeSeeding(publishSteps, runPath, { syncPublications: true }),
       ...interleaveRealtimeSeeding(publicationSteps, runPath),
       { key: 'seeding:prepare:final', path: `${runPath}/seeding/prepare`, retryLimit: 2 },
@@ -80,12 +107,12 @@ function batchCount(itemCount, batchSize) {
   return itemCount > 0 ? Math.ceil(itemCount / batchSize) : 0;
 }
 
-function numberedSteps(count, prefix, path, delayAfterMs = 0) {
+function numberedSteps(count, prefix, path, delayAfterMs = 0, retryLimit = 2) {
   return Array.from({ length: count }, (_, index) => ({
     key: `${prefix}:${index + 1}`,
     path,
     body: { stepKey: `${prefix}:${index + 1}` },
-    retryLimit: 2,
+    retryLimit,
     ...(delayAfterMs ? { delayAfterMs } : {})
   }));
 }

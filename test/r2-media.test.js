@@ -11,6 +11,61 @@ const config = {
   r2BucketName: 'media-bucket'
 };
 
+test('seeding uploads use persistent owner-scoped keys and publishing never deletes them', async () => {
+  const commands = [];
+  const store = createStore({ send: async (command) => {
+    commands.push(command);
+    if (command.constructor.name === 'HeadObjectCommand') return { ContentLength: 10, ContentType: 'image/jpeg' };
+    if (command.constructor.name === 'CreateMultipartUploadCommand') return { UploadId: 'upload' };
+    return {};
+  } });
+  const input = { ownerMetaUserId: 'owner', mediaId: 'seed', name: 'photo.jpg', mimeType: 'image/jpeg', sizeBytes: 10, purpose: 'seeding' };
+  const signed = await store.presignUpload(input);
+  assert.equal(signed.key, 'Seeding/owner/seed/photo.jpg');
+  const saved = await store.completeUpload({ ownerMetaUserId: 'owner', input: { ...input, key: signed.key } });
+  await store.deleteTemporaryMedia(saved);
+  assert.ok(!commands.some(c => c.constructor.name === 'DeleteObjectCommand'));
+  await assert.rejects(store.completeUpload({ ownerMetaUserId: 'other', input: { ...input, key: signed.key } }), e => e.statusCode === 403);
+  const multipart = await store.createMultipartUpload(input);
+  assert.equal(multipart.key, signed.key);
+  await store.presignMultipartPart({ ...input, key: signed.key, uploadId: 'upload', partNumber: 1 });
+  await store.completeMultipartUpload({ ...input, key: signed.key, uploadId: 'upload', parts: [{ partNumber: 1, etag: 'etag' }] });
+  await assert.rejects(store.presignUpload({ ...input, purpose: '../other' }), e => e.statusCode === 400);
+});
+
+test('legacy seeding is copied and verified before its database pointer changes', async () => {
+  let media = { id: 'seed', ownerMetaUserId: 'owner', blobUrl: 'r2://media-bucket/ads/owner/seed/a.jpg', blobPathname: 'ads/owner/seed/a.jpg', sizeBytes: 10, mimeType: 'image/jpeg' };
+  const calls = [];
+  let failCopy = true;
+  const store = createStore({
+    send: async command => {
+      calls.push(command.constructor.name);
+      if (failCopy) throw new Error('copy failed');
+      return { ContentLength: 10, ContentType: 'image/jpeg' };
+    },
+    db: {
+      getMedia: async () => media,
+      updateMediaLocation: async (owner, id, expected, url, key) => {
+        assert.equal(expected, media.blobUrl);
+        assert.equal(owner, 'owner');
+        assert.equal(id, 'seed');
+        calls.push('update');
+        return (media = { ...media, blobUrl: url, blobPathname: key });
+      }
+    }
+  });
+  await assert.rejects(store.preserveSeedingMedia({ ownerMetaUserId: 'owner', id: 'seed' }), /copy failed/);
+  assert.ok(media.blobPathname.startsWith('ads/'));
+  failCopy = false;
+  calls.length = 0;
+  await store.preserveSeedingMedia({ ownerMetaUserId: 'owner', id: 'seed' });
+  assert.deepEqual(calls, ['CopyObjectCommand', 'HeadObjectCommand', 'update']);
+  assert.equal(media.blobPathname, 'Seeding/owner/seed/a.jpg');
+  calls.length = 0;
+  await store.preserveSeedingMedia({ ownerMetaUserId: 'owner', id: 'seed' });
+  assert.deepEqual(calls, []);
+});
+
 function createStore({ send, signUrl, saveMedia = (media) => media, registeredR2Keys = async () => [], configOverrides = {}, db = {} } = {}) {
   const client = { send: send ?? (async () => ({})) };
   return createR2MediaStore({

@@ -30,7 +30,6 @@ export function loadConfig(environment = process.env) {
 
   const isProduction = environment.NODE_ENV === 'production';
   const databaseUrl = environment.DATABASE_URL?.trim() ?? '';
-  const blobReadWriteToken = environment.BLOB_READ_WRITE_TOKEN?.trim() ?? '';
   const r2AccountId = environment.R2_ACCOUNT_ID?.trim() ?? '';
   const r2BucketName = environment.R2_BUCKET_NAME?.trim() ?? '';
   const r2AccessKeyId = environment.R2_ACCESS_KEY_ID?.trim() ?? '';
@@ -63,8 +62,8 @@ export function loadConfig(environment = process.env) {
   if (isProduction && !databaseUrl) {
     throw new Error('DATABASE_URL is required in production.');
   }
-  if (isProduction && !r2Enabled && !blobReadWriteToken) {
-    throw new Error('R2 storage or BLOB_READ_WRITE_TOKEN is required in production.');
+  if (isProduction && !r2Enabled) {
+    throw new Error('R2 storage is required in production.');
   }
 
   const runtimeDirectory = resolve(environment.RUNTIME_DIRECTORY ?? 'data');
@@ -85,7 +84,6 @@ export function loadConfig(environment = process.env) {
     databasePath: databaseUrl ? null : resolve(runtimeDirectory, 'meta-ads.sqlite'),
     isProduction,
     databaseUrl,
-    blobReadWriteToken,
     r2Enabled,
     r2AccountId,
     r2BucketName,
@@ -104,7 +102,7 @@ export function loadConfig(environment = process.env) {
     telegramUploadWorkerSecret,
     telegramFileRoot,
     telegramUploadAllowedMetaUserIds,
-    mediaUploadMode: r2Enabled ? 'r2' : (blobReadWriteToken ? 'vercel-blob' : 'local')
+    mediaUploadMode: r2Enabled ? 'r2' : 'local'
   };
 }
 

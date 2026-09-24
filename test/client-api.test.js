@@ -1,12 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import { createApiClient } from '../public/api.js';
-
-const blobUploadEntrySource = await readFile(
-  new URL('../src/client/blob-upload-entry.js', import.meta.url),
-  'utf8'
-);
 
 test('encodes targeting queries and normalizes server errors', async () => {
   const requests = [];
@@ -447,69 +441,15 @@ test('uploads media directly to R2 and registers the completed object', async ()
   });
   const file = new File(['image'], 'image.jpg', { type: 'image/jpeg' });
 
-  const result = await api.uploadMedia(file, { mode: 'r2', xhrFactory: () => xhr });
+  const result = await api.uploadMedia(file, { mode: 'r2', purpose: 'seeding', xhrFactory: () => xhr });
 
   assert.deepEqual(requests.map(({ url }) => url), ['/api/r2-media/presign', '/api/r2-media/complete']);
   assert.equal(xhr.url, 'https://r2.example/upload');
   assert.equal(xhr.requestHeaders['content-type'], 'image/jpeg');
   assert.equal(requests[1].body.key, 'ads/owner/media-r2/image.jpg');
+  assert.equal(requests[0].body.purpose, 'seeding');
+  assert.equal(requests[1].body.purpose, 'seeding');
   assert.deepEqual(result, { id: 'media-r2', kind: 'image' });
-});
-
-test('uploads directly to Blob and completes metadata registration', async () => {
-  const fetchCalls = [];
-  const api = createApiClient(async (url, options) => {
-    fetchCalls.push({ url, options });
-    const body = JSON.parse(options.body);
-    return Response.json({ id: body.mediaId, kind: 'image' }, { status: 201 });
-  });
-  const uploadImpl = async (pathname, file, options) => {
-    uploadImpl.calls.push({ pathname, file, options, mediaId: options.clientPayload.mediaId });
-    return {
-      url: 'https://private.blob.vercel-storage.com/creative-random.jpg',
-      downloadUrl: 'https://private.blob.vercel-storage.com/creative-random.jpg?download=1',
-      pathname: 'meta-ads/media-id/creative-random.jpg',
-      contentType: file.type
-    };
-  };
-  uploadImpl.calls = [];
-  const file = new File(['image'], 'Creative Image.jpg', { type: 'image/jpeg' });
-  const onProgress = () => undefined;
-
-  const result = await api.uploadMedia(file, {
-    mode: 'vercel-blob',
-    uploadImpl,
-    onProgress
-  });
-
-  assert.equal(uploadImpl.calls[0].options.access, 'private');
-  assert.equal(uploadImpl.calls[0].options.onProgress, onProgress);
-  assert.match(uploadImpl.calls[0].pathname, /^meta-ads\/[a-f0-9-]+\/media\.jpg$/);
-  assert.equal(fetchCalls.at(-1).url, '/api/media/complete');
-  assert.equal(fetchCalls.at(-1).options.headers['content-type'], 'application/json');
-  assert.equal(result.id, uploadImpl.calls[0].mediaId);
-});
-
-test('uses a fixed ASCII-only Blob pathname for Vietnamese and mojibaked file names', async () => {
-  const api = createApiClient(async (_url, options) => {
-    const body = JSON.parse(options.body);
-    return Response.json({ id: body.mediaId, kind: 'image' }, { status: 201 });
-  });
-  const uploadImpl = async (pathname, file) => {
-    uploadImpl.pathname = pathname;
-    return {
-      url: 'https://private.blob.vercel-storage.com/upload.jpg',
-      downloadUrl: 'https://private.blob.vercel-storage.com/upload.jpg?download=1',
-      pathname,
-      contentType: file.type
-    };
-  };
-  const file = new File(['image'], 'CÆ¡ sá»Ÿ váº­t cháº¥t ná»¯.JPG', { type: 'image/jpeg' });
-
-  await api.uploadMedia(file, { mode: 'vercel-blob', uploadImpl });
-
-  assert.match(uploadImpl.pathname, /^meta-ads\/[a-f0-9-]+\/media\.jpg$/);
-  assert.doesNotMatch(uploadImpl.pathname, /[^\x00-\x7F]/);
 });
 
 test('requires R2 for ad video uploads and does not use Meta chunk fallback', async () => {
@@ -554,10 +494,6 @@ test('requires R2 for image uploads and does not use Meta fallback', async () =>
 
   await assert.rejects(api.uploadAdMedia(file, 'act_1'), /R2 chưa sẵn sàng/);
   assert.deepEqual(requests.map(({ url }) => url), ['/api/r2-media/presign']);
-});
-
-test('forwards progress from the Blob entry to Vercel upload', () => {
-  assert.match(blobUploadEntrySource, /onUploadProgress:\s*options\.onProgress/);
 });
 
 test('uses stable conversation-template CRUD routes and HTTP methods', async () => {
@@ -666,4 +602,17 @@ test('serves resource GETs from browser cache until a CRUD call, user refresh, o
   await api.loadSession(); // endpoint ngoài danh sách không bị cache
   await api.loadSession();
   assert.equal(fetched.filter((entry) => entry.endsWith('/api/auth/session')).length, 2);
+});
+
+test('does not cache runtime resources so media storage changes take effect immediately', async () => {
+  const fetched = [];
+  const api = createApiClient(async (url, options) => {
+    fetched.push(`${options?.method ?? 'GET'} ${url}`);
+    return Response.json({ mediaUploadMode: 'r2' });
+  }, { storage: new Map() });
+
+  await api.loadResources();
+  await api.loadResources();
+
+  assert.deepEqual(fetched, ['GET /api/resources', 'GET /api/resources']);
 });

@@ -1,6 +1,8 @@
 param(
   [string]$Server = 'campaignadmin@100.89.81.110',
-  [string]$KeyPath = "$env:USERPROFILE\.ssh\advertising_server_ed25519"
+  [string]$KeyPath = "$env:USERPROFILE\.ssh\advertising_server_ed25519",
+  # Skip the running-campaign check (the deploy restarts the service and interrupts any run in progress).
+  [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,12 +13,26 @@ $remoteArchive = '/home/campaignadmin/campaignbuilder-deploy.tar.gz'
 try {
   Set-Location $projectRoot
 
+  if ($Force) {
+    Write-Host '0/4 Skipping the running-campaign check (-Force).'
+  } else {
+    Write-Host '0/4 Checking for running campaign runs...'
+    $remoteApp = '/home/campaignadmin/apps/campaignbuilder'
+    & scp -i $KeyPath -o BatchMode=yes (Join-Path $projectRoot 'scripts/check-active-runs.js') "${Server}:$remoteApp/scripts/check-active-runs.js"
+    if ($LASTEXITCODE -ne 0) { throw 'Could not upload the running-campaign check script.' }
+    & ssh -i $KeyPath -o BatchMode=yes $Server "cd $remoteApp && node --env-file=/home/campaignadmin/.config/campaignbuilder/app.env scripts/check-active-runs.js"
+    if ($LASTEXITCODE -eq 3) {
+      throw 'A campaign run is in progress: restarting now would interrupt it. Wait for it to finish and deploy again, or pass -Force if you are sure.'
+    }
+    if ($LASTEXITCODE -ne 0) { throw 'Could not check for running campaign runs. Check the connection, or pass -Force if you are sure.' }
+  }
+
   Write-Host '1/4 Building frontend...'
   & npm.cmd run build:client
   if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed.' }
 
   Write-Host '2/4 Creating deployment package...'
-  & tar -czf $archivePath --exclude=node_modules --exclude=.git --exclude=.next --exclude=dist package.json package-lock.json src public scripts api vercel.json
+  & tar -czf $archivePath --exclude=node_modules --exclude=.git --exclude=.next --exclude=dist package.json package-lock.json src public scripts deploy
   if ($LASTEXITCODE -ne 0) { throw 'Could not create deployment package.' }
 
   Write-Host '3/4 Uploading code to Ubuntu...'

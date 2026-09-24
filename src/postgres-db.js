@@ -261,6 +261,14 @@ export function createPostgresDatabase(sql) {
       `)[0]);
     },
 
+    async updateMediaLocation(ownerMetaUserId, id, expectedUrl, blobUrl, blobPathname) {
+      return mapOptionalMedia((await sql`
+        UPDATE media SET blob_url = ${blobUrl}, blob_pathname = ${blobPathname}, blob_download_url = NULL
+        WHERE owner_meta_user_id = ${ownerMetaUserId} AND id = ${id} AND blob_url = ${expectedUrl}
+        RETURNING *
+      `)[0]);
+    },
+
     async getMedia(ownerMetaUserId, id) {
       if (!ownerMetaUserId || !id) {
         throw new TypeError('getMedia requires ownerMetaUserId and id');

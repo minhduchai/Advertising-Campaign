@@ -845,9 +845,13 @@ test('applies a tool audience with a namespaced id and detaches without losing t
   });
   const otherAccount = toolAudienceTemplateCompatibility(template, 'act_2', customAudiences);
   assert.equal(otherAccount.compatible, true);
-  assert.deepEqual(otherAccount.allowedCustomAudienceIds, []);
-  assert.deepEqual(otherAccount.skippedCustomAudienceIds, ['ca-1', 'ca-2']);
-  assert.match(otherAccount.warning, /bỏ qua 2 Custom Audience/);
+  assert.deepEqual(otherAccount.allowedCustomAudienceIds, ['ca-1', 'ca-2']);
+  assert.deepEqual(otherAccount.skippedCustomAudienceIds, []);
+  assert.equal(otherAccount.warning, '');
+  const partlySharedAccount = toolAudienceTemplateCompatibility(template, 'act_2', [{ id: 'ca-2' }]);
+  assert.deepEqual(partlySharedAccount.allowedCustomAudienceIds, ['ca-2']);
+  assert.deepEqual(partlySharedAccount.skippedCustomAudienceIds, ['ca-1']);
+  assert.match(partlySharedAccount.warning, /bỏ qua 1 Custom Audience/);
   const missingAudience = toolAudienceTemplateCompatibility(template, 'act_1', [{ id: 'ca-1' }]);
   assert.equal(missingAudience.compatible, true);
   assert.deepEqual(missingAudience.allowedCustomAudienceIds, ['ca-1']);

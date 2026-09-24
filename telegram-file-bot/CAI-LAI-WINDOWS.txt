@@ -1,0 +1,72 @@
+KHÔI PHỤC BOT TRÊN WINDOWS MỚI — 10/09/2026
+
+Bộ này gồm toàn bộ mã bot, bộ cài mới, cập nhật và bài kiểm tra.
+Không chứa token/mật khẩu thật hoặc file trên ổ chung.
+Chạy trên máy công ty có truy cập được \\192.168.1.6\marketing.
+
+1. CHUẨN BỊ
+- Cài Python 3.12 từ python.org, chọn Python Launcher khi cài.
+- Cài Docker Desktop từ docker.com; bật WSL 2/Virtual Machine Platform nếu trình cài yêu cầu và khởi động lại Windows.
+- Mở Docker Desktop, chờ Engine running. Bật Settings > General > Start Docker Desktop when you sign in.
+- Mở ổ chung trong File Explorer và đăng nhập tài khoản ổ mạng nếu được hỏi.
+- Giải nén bộ ZIP vào một thư mục riêng trên máy công ty.
+
+2. TẠO CẤU HÌNH
+Chạy CAI-MOI.cmd. Lần đầu bộ cài tạo hai file rồi dừng để anh điền:
+  C:\TelegramFileBot\.env
+  C:\TelegramFileBot\docker.env
+Mở bằng Notepad. Không đổi tên file thành .txt.
+
+Trong .env:
+- BOT_TOKEN: token hiện tại của @duck_company_file_bot lấy từ BotFather.
+  Token cũ đã xuất hiện trong ảnh log trước đây: thu hồi/đổi token bằng /revoke trong BotFather rồi dùng token mới.
+- ALLOWED_USER_ID=1643641244 (tài khoản quản trị của anh).
+- ALLOWED_GROUP_IDS=-5409953650 (group cũ; thay nếu đã đổi group).
+- FILE_ROOT=\\192.168.1.6\marketing
+- BOT_API_BASE=http://127.0.0.1:8081
+- APP_URL giữ giá trị mẫu nếu ứng dụng vẫn dùng tên miền cũ.
+- TELEGRAM_UPLOAD_WORKER_SECRET: khóa trùng với biến cùng tên trên Vercel.
+  Nếu chưa lấy lại được, để trống: bot chat vẫn dùng được, chức năng app giao đường dẫn cho máy công ty chưa hoạt động.
+
+Trong docker.env:
+- TELEGRAM_API_ID và TELEGRAM_API_HASH: lấy từ my.telegram.org > API development tools bằng tài khoản đã tạo API trước đây.
+- TELEGRAM_LOCAL=1
+API_ID/API_HASH khác BOT_TOKEN. Không cần đăng nhập ứng dụng Telegram Desktop trên máy công ty.
+Không gửi ảnh chứa các khóa này. Cài lại Windows không tự xóa bot/group Telegram hoặc cấu hình trên Vercel.
+
+3. CÀI VÀ TỰ CHẠY
+Lưu hai file cấu hình, chạy lại CAI-MOI.cmd bằng tài khoản Windows anh thường dùng ở công ty.
+Nếu Windows báo thiếu quyền tạo tác vụ, chạy bằng quyền Administrator của cùng tài khoản đó.
+Bộ cài tạo môi trường Python, cài thư viện, tạo/chạy Local Bot API, tạo Task Scheduler và chạy bot ẩn.
+Tác vụ tên: Telegram Company File Bot. Log: C:\TelegramFileBot\bot.log.
+Bot tự chạy sau khi đăng nhập Windows. Máy phải bật, không sleep, có Internet và truy cập được ổ mạng.
+Khóa màn hình được; tắt máy hoặc đăng xuất sẽ không duy trì luồng chạy này.
+Không cần giữ PowerShell mở. Không chạy thêm bot.py bằng tay khi tác vụ đang chạy.
+
+4. KIỂM TRA
+Trong PowerShell:
+  docker ps --filter "name=telegram-bot-api"
+  Test-NetConnection 127.0.0.1 -Port 8081
+  Get-ScheduledTask -TaskName "Telegram Company File Bot" | Select-Object TaskName,State
+Container cần Up, cổng cần True, tác vụ cần Running.
+Nhắn /status@duck_company_file_bot bằng tài khoản quản trị, rồi thử dán đường dẫn một file nhỏ.
+File sẽ có caption: @người_yêu_cầu, Bot gửi file nha.
+Hàng đợi vẫn xử lý lần lượt nhưng không gửi tin thông báo đang gửi/thành công riêng.
+Nếu lỗi, bot vẫn thông báo. Trong group nhân viên chỉ dán đường dẫn hoặc bấm nút chọn file; lệnh quản trị bị khóa.
+
+Nếu cần xem log đã che token trước khi chia sẻ:
+  Get-Content C:\TelegramFileBot\bot.log -Tail 60 | ForEach-Object { $_ -replace 'bot\d+:[A-Za-z0-9_-]+','bot[TOKEN_DA_CHE]' }
+
+5. CHỈ NẾU CHUYỂN TỪ BOT API CLOUD SANG LOCAL
+Nếu token vẫn đang được một chương trình dùng Bot API cloud, dừng chương trình đó trước.
+Chỉ khi Local Bot API đã chạy, dùng PowerShell để đăng xuất token khỏi cloud (không đăng xuất tài khoản Telegram cá nhân):
+  $tokenLine = Select-String -Path C:\TelegramFileBot\.env -Pattern '^BOT_TOKEN=' | Select-Object -First 1
+  $localBotToken = ($tokenLine.Line -replace '^BOT_TOKEN=','').Trim()
+  try { (Invoke-RestMethod -Method Post -Uri "https://api.telegram.org/bot$localBotToken/logOut").ok } catch { Write-Host 'Chuyen cloud sang local chua thanh cong. Khong chup URL chua token.' }
+  Remove-Variable localBotToken,tokenLine
+Bot dùng Local API từ trước có thể không cần bước này.
+
+6. CẬP NHẬT LẦN SAU
+CAP-NHAT-BOT.cmd dùng để cập nhật bộ cài đã có sẵn.
+Nó không khôi phục token, không tự thêm khóa worker và không sao lưu .env.
+Hãy giữ bản sao .env và docker.env ở nơi riêng an toàn để phục hồi lần sau.

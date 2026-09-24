@@ -1,6 +1,7 @@
 import { WorkflowEntrypoint } from "cloudflare:workers";
 import { signedHeaders } from "./hmac.js";
 import { isPublishStep, runPublishBatch } from "./publish-batch.js";
+import { isMediaPrepareStep, nextMediaPrepareAction } from "./media-prepare.js";
 
 const DEFAULT_RETRY = Object.freeze({
   retries: { limit: 3, delay: "5 seconds", backoff: "exponential" },
@@ -21,7 +22,7 @@ export class CampaignWorkflow extends WorkflowEntrypoint {
     const workflowToken = requireWorkflowToken(event.payload?.workflowToken);
     const startIndex = requireStartIndex(event.payload?.startIndex);
     const plan = await step.do("Tải kế hoạch tạo quảng cáo", DEFAULT_RETRY, () =>
-      callVercel(this.env, {
+      callAppServer(this.env, {
         method: "GET",
         path: `/api/internal/workflow/runs/${encodeURIComponent(runId)}/plan`,
         workflowToken,
@@ -47,6 +48,9 @@ export class CampaignWorkflow extends WorkflowEntrypoint {
             `${workflowStepName(index, plannedStep)}${attemptLabel}${call > 1 ? ` · lần ${call}` : ""}`,
             retryConfig(plannedStep),
             execute,
+          ), (call, milliseconds) => step.sleep(
+            `Chờ tiếp tục · ${workflowStepName(index, plannedStep)}${attemptLabel} · ${call}`,
+            milliseconds,
           ))
           : await step.do(`${workflowStepName(index, plannedStep)}${attemptLabel}`, retryConfig(plannedStep), execute);
         if (!result?.retryable) break;
@@ -57,6 +61,23 @@ export class CampaignWorkflow extends WorkflowEntrypoint {
       }
       if (result?.retryable) throw new Error(`Meta vẫn giới hạn sau 4 lần thử: ${plannedStep.key}`);
       results.push(result);
+
+      if (isMediaPrepareStep(plannedStep)) {
+        const mediaAction = nextMediaPrepareAction(result, event.payload?.prepareAttempt);
+        if (mediaAction.action === 'give_up') throw new NonRetryableError(mediaAction.message);
+        if (mediaAction.action === 'wait') {
+          await step.sleep(`Chờ video xử lý ${mediaAction.attempt}`, mediaAction.waitMs);
+          await step.do(`Tiếp tục chuẩn bị video ${mediaAction.attempt}`, DEFAULT_RETRY, async () => {
+            const id = `${runId}-${workflowToken.slice(0, 12)}-media-${mediaAction.attempt}`;
+            try {
+              await this.env.CAMPAIGN_WORKFLOW.create({ id, params: { runId, workflowToken, startIndex: index, prepareAttempt: mediaAction.attempt } });
+            } catch {
+              await this.env.CAMPAIGN_WORKFLOW.get(id);
+            }
+          });
+          return { runId, status: 'continued', pending: true };
+        }
+      }
 
       if (plannedStep.key === 'run:finalize' && result?.pending === true) {
         const attempt = Number(event.payload?.finalizeAttempt ?? 0) + 1;
@@ -102,7 +123,7 @@ export class CampaignWorkflow extends WorkflowEntrypoint {
 }
 
 export async function executePlannedStep(env, runId, workflowToken, plannedStep) {
-  const response = await callVercel(env, {
+  const response = await callAppServer(env, {
     method: plannedStep.method ?? "POST",
     path: plannedStep.path,
     body: plannedStep.body ?? { runId, stepKey: plannedStep.key },
@@ -115,8 +136,8 @@ export async function executePlannedStep(env, runId, workflowToken, plannedStep)
   return response;
 }
 
-export async function callVercel(env, { method, path, body, workflowToken }) {
-  if (!env.VERCEL_INTERNAL_BASE_URL) throw new Error("VERCEL_INTERNAL_BASE_URL chưa được cấu hình.");
+export async function callAppServer(env, { method, path, body, workflowToken }) {
+  if (!env.APP_SERVER_BASE_URL) throw new Error("APP_SERVER_BASE_URL chưa được cấu hình.");
   if (!path?.startsWith("/api/internal/workflow/")) {
     throw new NonRetryableError("Workflow chỉ được gọi endpoint nội bộ đã cho phép.");
   }
@@ -132,7 +153,7 @@ export async function callVercel(env, { method, path, body, workflowToken }) {
   if (serializedBody) headers["content-type"] = "application/json";
   headers["x-workflow-token"] = requireWorkflowToken(workflowToken);
 
-  const response = await fetch(new URL(path, env.VERCEL_INTERNAL_BASE_URL), {
+  const response = await fetch(new URL(path, env.APP_SERVER_BASE_URL), {
     method: normalizedMethod,
     headers,
     body: serializedBody || undefined,
@@ -141,7 +162,7 @@ export async function callVercel(env, { method, path, body, workflowToken }) {
 
   if (response.status === 429 && responseBody?.retryable === true) return responseBody;
   if (!response.ok) {
-    const message = responseBody?.error?.message ?? responseBody?.message ?? `Vercel trả về HTTP ${response.status}.`;
+    const message = responseBody?.error?.message ?? responseBody?.message ?? `Application server trả về HTTP ${response.status}.`;
     if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
       throw new NonRetryableError(message);
     }

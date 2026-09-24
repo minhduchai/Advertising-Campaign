@@ -32,11 +32,11 @@ Tăng tốc tải banner và video quảng cáo bằng cách tải trực tiếp
 - Upload lỗi không ghi metadata.
 - Meta chưa nhận được media thì chưa xóa object.
 - Object bỏ dở được dọn theo tuổi bằng lifecycle rule của bucket.
-- Nếu R2 chưa cấu hình, production dùng lại upload trực tiếp Meta hiện tại.
+- Production bắt buộc dùng R2; không còn fallback upload media quảng cáo trực tiếp qua các route Meta cũ.
 
 ## Kiểm thử
 
 - Kiểm thử ký PUT/GET, xác minh HEAD, owner scope và cleanup.
 - Kiểm thử client upload trực tiếp và tiến độ.
-- Kiểm thử fallback upload Meta khi thiếu cấu hình R2.
+- Kiểm thử production từ chối upload khi thiếu R2 và xác nhận Meta nhận media qua `file_url`.
 - Chạy toàn bộ test trước khi deploy.

@@ -28,28 +28,32 @@ export function toolAudienceTemplateCompatibility(template, adAccountId, customA
 
   const sourceAdAccountId = String(content.sourceAdAccountId ?? '');
   const currentAdAccountId = String(adAccountId ?? '');
+  const uniqueIds = [...new Set(customAudienceIds.map(String))];
+  const availableIds = new Set(customAudiences.map((audience) => String(audience?.id ?? '')));
+  const allowedIds = uniqueIds.filter((id) => availableIds.has(id));
+  const missingIds = uniqueIds.filter((id) => !availableIds.has(id));
   if (!sourceAdAccountId) {
     return {
       compatible: true,
       reason: '',
-      warning: `Đã bỏ qua ${customAudienceIds.length} Custom Audience vì mẫu chưa lưu tài khoản quảng cáo nguồn`,
-      allowedCustomAudienceIds: [],
-      skippedCustomAudienceIds: [...new Set(customAudienceIds.map(String))]
+      warning: missingIds.length > 0
+        ? `Đã bỏ qua ${missingIds.length} Custom Audience không có trên tài khoản hiện tại: ${missingIds.join(', ')}`
+        : '',
+      allowedCustomAudienceIds: allowedIds,
+      skippedCustomAudienceIds: missingIds
     };
   }
   if (sourceAdAccountId !== currentAdAccountId) {
     return {
       compatible: true,
       reason: '',
-      warning: `Đã bỏ qua ${customAudienceIds.length} Custom Audience thuộc ${sourceAdAccountId}; chiến dịch đang dùng ${currentAdAccountId || 'tài khoản khác'}`,
-      allowedCustomAudienceIds: [],
-      skippedCustomAudienceIds: [...new Set(customAudienceIds.map(String))]
+      warning: missingIds.length > 0
+        ? `Đã bỏ qua ${missingIds.length} Custom Audience thuộc ${sourceAdAccountId} nhưng không có trên ${currentAdAccountId || 'tài khoản hiện tại'}: ${missingIds.join(', ')}`
+        : '',
+      allowedCustomAudienceIds: allowedIds,
+      skippedCustomAudienceIds: missingIds
     };
   }
-  const availableIds = new Set(customAudiences.map((audience) => String(audience?.id ?? '')));
-  const uniqueIds = [...new Set(customAudienceIds.map(String))];
-  const missingIds = uniqueIds.filter((id) => !availableIds.has(id));
-  const allowedIds = uniqueIds.filter((id) => availableIds.has(id));
   if (missingIds.length > 0) {
     return {
       compatible: true,
