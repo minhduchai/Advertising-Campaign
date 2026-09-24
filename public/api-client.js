@@ -441,12 +441,21 @@ function readXhrPayload(xhr) {
   }
 }
 
+// Server contract keeps a few English error codes; show them in Vietnamese.
+const SERVER_ERROR_TEXT = {
+  'Connect Meta first': 'Vui lòng kết nối Meta để tiếp tục.',
+  'Not found': 'Không tìm thấy dữ liệu yêu cầu.',
+  'Run not found': 'Không tìm thấy lượt tạo quảng cáo.',
+  'Method not allowed': 'Phương thức không được hỗ trợ',
+  'Unexpected server error': 'Máy chủ gặp lỗi không mong muốn. Vui lòng thử lại.'
+};
+
 function requestError(status, payload) {
-  const message = payload.errors?.map((entry) => entry.message).join(' · ')
+  const raw = payload.errors?.map((entry) => entry.message).join(' · ')
     ?? payload.message
     ?? payload.error
     ?? 'Yêu cầu thất bại';
-  const error = new Error(message);
+  const error = new Error(SERVER_ERROR_TEXT[raw] ?? raw);
   error.status = status;
   error.payload = payload;
   return error;

@@ -155,7 +155,7 @@ body {
   background: var(--color-canvas);
   color: var(--color-text);
   font-family: var(--font-sans);
-  font-size: 15px;
+  font-size: 100%;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -928,9 +928,9 @@ textarea:focus-visible,
 }
 
 .expand-select.is-open .expand-select-chevron {
-  border-color: color-mix(in srgb, var(--color-danger) 34%, var(--color-border));
-  background: color-mix(in srgb, var(--color-danger) 10%, var(--color-surface));
-  color: var(--color-danger);
+  border-color: color-mix(in srgb, var(--color-primary) 34%, var(--color-border));
+  background: color-mix(in srgb, var(--color-primary) 10%, var(--color-surface));
+  color: var(--color-primary);
 }
 
 .expand-select.is-open .expand-select-chevron svg {
@@ -1666,6 +1666,16 @@ textarea:focus-visible,
   color: var(--color-primary);
   font-size: 1rem;
   font-weight: 800;
+}
+
+.account-menu-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .is-danger .account-menu-icon {
@@ -2882,6 +2892,22 @@ textarea:focus-visible {
 .field-row .field-help {
   margin-top: 12px;
   flex: 1 1 0;
+}
+
+.input-with-suffix {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.input-with-suffix input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.input-with-suffix > span {
+  color: var(--color-muted);
+  font-weight: 700;
 }
 
 /* Advantage+ audience banner (on/off summary strip) */
@@ -11091,16 +11117,16 @@ button.cal-day:focus-visible {
   width: 24px;
   height: 24px;
   border-radius: 50%;
-  background: var(--color-danger-soft);
-  border: 1px solid color-mix(in srgb, var(--color-danger) 22%, transparent);
-  color: var(--color-danger);
+  background: var(--color-primary-soft);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 22%, transparent);
+  color: var(--color-primary);
   transition: background .22s ease, border-color .22s ease, transform .3s cubic-bezier(.34, 1.56, .64, 1);
 }
 
 .expand-select.is-open .expand-select-chevron,
 .smart-resource-picker.is-open .smart-resource-chevron {
-  background: color-mix(in srgb, var(--color-danger) 16%, var(--color-danger-soft));
-  border-color: color-mix(in srgb, var(--color-danger) 48%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 16%, var(--color-primary-soft));
+  border-color: color-mix(in srgb, var(--color-primary) 48%, transparent);
 }
 
 .smart-resource-chevron svg {
@@ -11121,8 +11147,8 @@ button.cal-day:focus-visible {
   width: 24px;
   height: 24px;
   border-radius: 50%;
-  background: var(--color-danger-soft);
-  border: 1px solid color-mix(in srgb, var(--color-danger) 22%, transparent);
+  background: var(--color-primary-soft);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 22%, transparent);
   transition: background .22s ease, border-color .22s ease;
 }
 
@@ -11130,7 +11156,7 @@ button.cal-day:focus-visible {
   width: 12px;
   height: 12px;
   fill: none;
-  stroke: var(--color-danger);
+  stroke: var(--color-primary);
   stroke-width: 2.5;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -11140,8 +11166,8 @@ button.cal-day:focus-visible {
 .age-dd.open .dropdown-chevron-badge,
 .dt-field.open .dropdown-chevron-badge,
 .history-date-trigger[aria-expanded="true"] .dropdown-chevron-badge {
-  background: color-mix(in srgb, var(--color-danger) 16%, var(--color-danger-soft));
-  border-color: color-mix(in srgb, var(--color-danger) 48%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 16%, var(--color-primary-soft));
+  border-color: color-mix(in srgb, var(--color-primary) 48%, transparent);
 }
 
 .age-dd.open .dropdown-chevron-badge svg,
@@ -11702,6 +11728,17 @@ label[for] {
 [data-theme='dark'] .node-type-label,
 [data-theme='dark'] .empty-kicker {
   color: #60a5fa;
+}
+
+/* Small primary pills sit on a primary tint; base primary misses AA there. */
+[data-theme='dark'] .conversation-status-pill,
+[data-theme='dark'] .conversation-subsection-heading>span {
+  color: #60a5fa;
+}
+
+[data-theme='light'] .conversation-status-pill,
+[data-theme='light'] .conversation-subsection-heading>span {
+  color: var(--color-primary-strong);
 }
 
 [data-theme='light'] .has-errors .validation-status-icon {
