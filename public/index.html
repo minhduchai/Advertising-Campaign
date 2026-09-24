@@ -29,30 +29,6 @@
     href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300..800;1,300..800&family=Inter:wght@400;500;600;700&display=swap"
     rel="stylesheet" />
   <link rel="stylesheet" href="/app.css" />
-  <script>
-    (() => {
-      const params = new URLSearchParams(location.search);
-      let restorePreview = false;
-      try {
-        restorePreview = params.has('connected') && sessionStorage.getItem('launch-control-return') === '1';
-        if (params.get('frontend') === 'launch-control') sessionStorage.setItem('launch-control-return', '1');
-      } catch { /* Preview selection still works when storage is unavailable. */ }
-      if (params.get('frontend') !== 'launch-control' && !restorePreview) return;
-      if (restorePreview) {
-        params.set('frontend', 'launch-control');
-        params.set('realResources', '1');
-        history.replaceState({}, '', location.pathname + '?' + params.toString());
-      }
-      document.documentElement.dataset.frontend = 'launch-control';
-      // The prototype owns its visual system. Legacy widget styles are layered
-      // as a fallback by launch-preview.css, never applied above the design.
-      document.querySelector('link[href="/app.css"]')?.remove();
-      const stylesheet = document.createElement('link');
-      stylesheet.rel = 'stylesheet';
-      stylesheet.href = '/launch-preview.css';
-      document.head.appendChild(stylesheet);
-    })();
-  </script>
 </head>
 
 <body>

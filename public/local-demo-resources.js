@@ -4,7 +4,6 @@ export function shouldUseLocalDemoResources(location, error = null) {
   if (!LOCAL_PREVIEW_HOSTS.has(String(location?.hostname ?? '').toLowerCase())) return false;
   const params = new URLSearchParams(String(location?.search ?? ''));
   if (params.get('realResources') === '1') return false;
-  if (params.get('frontend') === 'launch-control' && params.get('demoResources') !== '1') return false;
   return params.get('demoResources') === '1' || Number(error?.status) === 401;
 }
 

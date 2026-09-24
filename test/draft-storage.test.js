@@ -22,7 +22,6 @@ test('restores unfinished campaign content, selection and uploaded media after a
   ad.mediaAsset = { image_hash: 'uploaded-image' };
   ad.mediaPreviewUrl = 'blob:temporary';
   state.selection = { clientId: ad.clientId, type: 'ad' };
-  state.ui.launchSections = { [ad.clientId]: 'message' };
   state.connected = true;
   state.running = true;
   state.resources.accessToken = 'must-not-persist';

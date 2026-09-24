@@ -3,14 +3,13 @@ import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
 import { build } from 'esbuild';
 
-test('normal and launch-control entry points share one URL per browser module', async () => {
+test('browser modules resolve to one URL each', async () => {
   const buildResult = await build({
     entryPoints: ['public/app.js'], bundle: true, write: false, metafile: true,
     platform: 'browser', format: 'esm', logLevel: 'silent'
   });
   const urls = Object.keys(buildResult.metafile.inputs);
   const projectModules = urls.filter((url) => url.startsWith('public/'));
-  assert.ok(projectModules.includes('public/launch-preview.js'));
   assert.equal(projectModules.length, new Set(projectModules.map((url) => url.split('?')[0])).size);
   assert.ok(projectModules.every((url) => !url.includes('?')));
   const index = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');

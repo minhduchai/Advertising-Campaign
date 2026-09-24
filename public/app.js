@@ -113,12 +113,6 @@ import {
   renderActivityHistoryReportTable
 } from './activity-history.js';
 
-const launchPreview = document.documentElement.dataset.frontend === 'launch-control'
-  ? await import('./launch-preview.js')
-  : null;
-const quickCreate = launchPreview ? await import('./quick-create.js') : null;
-launchPreview?.initializeChrome();
-
 const api = createApiClient();
 const telegramUpload = createTelegramUploadClient();
 const locationMaps = createLocationMapManager({ document });
@@ -250,8 +244,7 @@ const publishRecoveryTimeoutMs = 60 * 60 * 1000;
 const historyRealtimeDelays = [2000, 3000, 5000, 10000];
 
 function render() {
-  const draftSaved = draftStorage.save(state);
-  launchPreview?.updateSaveStatus(draftSaved);
+  draftStorage.save(state);
   workspace.inert = sessionLoading;
   const resourcePickerState = captureSmartResourcePickerState();
   const activeWorkspace = state.ui?.activeWorkspace ?? 'campaign';
@@ -259,13 +252,10 @@ function render() {
   historyWorkspace.hidden = activeWorkspace !== 'history';
   renderPreservingEditorScroll(workspace, state.selection?.clientId, () => {
     refreshProgressErrors();
-    const quickMode = activeWorkspace === 'campaign' && state.ui?.launchMode === 'quick';
     workspace.innerHTML = activeWorkspace === 'seeding'
       ? renderSeedingWorkspace(state)
-      : quickMode ? quickCreate.renderQuickWorkspace(state) : renderWorkspace(state);
-    if (!quickMode) launchPreview?.decorateWorkspace(workspace, state);
+      : renderWorkspace(state);
     locationMaps.sync(workspace);
-    workspace.classList.toggle('is-quick-create', quickMode);
     workspace.classList.toggle('tree-collapsed', Boolean(state.ui?.treeCollapsed));
     const campaignModeActive = activeWorkspace !== 'history';
     openCampaignWorkspaceButton?.classList.toggle('is-active', campaignModeActive);
@@ -321,7 +311,6 @@ function renderWorkspaceTreeProgress() {
   next.innerHTML = renderWorkspace(state);
   const nextTree = next.querySelector('.workspace-tree');
   if (!nextTree) return;
-  launchPreview?.decorateTree(nextTree, state);
   tree.replaceWith(nextTree);
   nextTree.scrollTop = scrollTop;
   if (!focus) return;
@@ -408,113 +397,6 @@ function renderTopbar() {
     : 'Kết nối Meta');
   connectButton.title = state.connected ? 'Tùy chọn tài khoản Meta' : 'Kết nối Meta';
   openHistoryWorkspaceButton.disabled = false;
-  launchPreview?.refresh(workspace, state);
-}
-
-if (launchPreview) {
-  document.addEventListener('click', async (event) => {
-    const utility = event.target.closest('[data-launch-utility]');
-    if (utility) {
-      openCampaignWorkspaceButton.click();
-      launchPreview.openUtility(workspace, state, utility.dataset.launchUtility);
-      return;
-    }
-    if (event.target.closest('[data-launch-close-utility]')) {
-      launchPreview.closeUtility(workspace, state);
-      return;
-    }
-    const librarySection = event.target.closest('[data-launch-library-section]');
-    if (librarySection) {
-      const target = launchPreview.sectionTarget(state, librarySection.dataset.launchLibrarySection);
-      launchPreview.closeUtility(workspace, state);
-      if (target) {
-        launchPreview.setSection(state, target.id, target.clientId);
-        await openProgressNode(target.clientId);
-        const picker = workspace.querySelector('[data-template-card-dropdown], [data-template-card-picker]');
-        if (picker) {
-          if (picker.tagName === 'DETAILS') picker.open = true;
-          picker.scrollIntoView({ block: 'center' });
-        }
-      }
-      return;
-    }
-    if (event.target.closest('[data-launch-preview-expand]')) {
-      launchPreview.openPreview(workspace);
-      return;
-    }
-    if (event.target.closest('[data-launch-rename]')) {
-      const details = workspace.querySelector('.launch-identity');
-      if (details) details.open = true;
-      workspace.querySelector('[data-field="name"]')?.focus();
-      return;
-    }
-    if (event.target.closest('#open-campaign-workspace, #open-history-workspace')) {
-      launchPreview.closeUtility(workspace, state);
-    }
-    if (event.target.closest('[data-launch-connect]')) {
-      connectButton.click();
-      return;
-    }
-    if (event.target.closest('[data-launch-check]')) {
-      if (workspaceProgress(state).reviewComplete) await publishDraft();
-      else await activateProgressReview();
-      return;
-    }
-    if (event.target.closest('[data-launch-toggle-summary]')) {
-      if (window.matchMedia('(min-width: 1101px)').matches) {
-        workspace.classList.toggle('launch-summary-collapsed');
-        document.querySelector('.launch-summary-toggle')?.classList.toggle('is-forced', workspace.classList.contains('launch-summary-collapsed'));
-        return;
-      }
-      state.ui.launchReadinessOpen = !state.ui.launchReadinessOpen;
-      workspace.querySelector('.launch-readiness')?.classList.toggle('is-open', state.ui.launchReadinessOpen);
-      const scrim = workspace.querySelector('.launch-summary-scrim');
-      if (scrim) scrim.hidden = !state.ui.launchReadinessOpen;
-      launchPreview.refresh(workspace, state);
-      const focus = state.ui.launchReadinessOpen
-        ? workspace.querySelector('.launch-readiness-close')
-        : document.querySelector('.topbar [data-launch-toggle-summary]');
-      focus?.focus();
-      return;
-    }
-    if (event.target.closest('[data-launch-seeding]')) {
-      const campaign = activeCampaign(state);
-      if (!campaign) return;
-      activateNode(state, campaign.clientId);
-      resetHistoryRealtimeSync();
-      state.activityHistory.open = false;
-      state.ui.activeWorkspace = 'seeding';
-      state.ui.treeOpen = false;
-      state.ui.launchReadinessOpen = false;
-      render();
-    }
-  });
-  // Runs after the editor's input handler so the preview reads the latest field value.
-  document.addEventListener('input', (event) => {
-    if (!workspace.contains(event.target)) return;
-    if (event.target.matches('[data-launch-tree-search]')) {
-      state.ui.launchTreeQuery = event.target.value;
-      launchPreview.filterTree(workspace.querySelector('.workspace-tree'), event.target.value);
-    } else {
-      launchPreview.refresh(workspace, state);
-      quickCreate?.refreshQuickWorkspace(workspace, state);
-      launchPreview.updateSaveStatus(draftStorage.save(state));
-    }
-  });
-  document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && state.ui.launchReadinessOpen) {
-      document.querySelector('.topbar [data-launch-toggle-summary]')?.click();
-    }
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k'
-      && state.ui.activeWorkspace === 'campaign') {
-      event.preventDefault();
-      if (window.matchMedia('(max-width: 820px)').matches) {
-        state.ui.treeOpen = true;
-        render();
-      }
-      workspace.querySelector('[data-launch-tree-search]')?.focus();
-    }
-  });
 }
 
 function confirmActivePublish() {
@@ -1235,26 +1117,10 @@ async function refreshHistoryPublications({ reset = false } = {}) {
 }
 
 workspace.addEventListener('click', async (event) => {
-  const control = event.target.closest('[data-action], [data-quick-mode]');
+  const control = event.target.closest('[data-action]');
   if (!control) return;
 
   const { action, clientId } = control.dataset;
-  if (control.dataset.quickMode && quickCreate) {
-    state.ui.launchMode = control.dataset.quickMode;
-    const section = control.dataset.quickSection;
-    if (section) launchPreview.setSection(state, section, state.selection?.clientId);
-    render();
-    return;
-  }
-  if (action === 'launch-section' && launchPreview) {
-    const target = launchPreview.sectionTarget(state, control.dataset.launchSection);
-    if (!target) return;
-    launchPreview.setSection(state, target.id, target.clientId);
-    await openProgressNode(target.clientId);
-    workspace.querySelector('.workspace-editor')?.scrollTo({ top: 0 });
-    workspace.querySelector(`[data-launch-section="${launchPreview.launchSection(state)}"]`)?.focus({ preventScroll: true });
-    return;
-  }
   if (action === 'close-mobile-panels') {
     state.ui.treeOpen = false;
     state.ui.reviewOpen = false;
@@ -1320,7 +1186,7 @@ workspace.addEventListener('click', async (event) => {
     const requirement = progressRequirement(state, clientId, control.dataset.validationField);
     if (requirement && !requirement.complete) {
       const gate = navigationGate(state, clientId);
-      await revealProgressRequirements(launchPreview || gate.allowed ? [requirement] : gate.missing);
+      await revealProgressRequirements(gate.allowed ? [requirement] : gate.missing);
     }
     return;
   }
@@ -1354,7 +1220,7 @@ workspace.addEventListener('click', async (event) => {
     const gate = navigationGate(state, clientId);
     const current = findNode(state, state.selection?.clientId);
     const movingBack = current && gate.match && stepIndex(current.type) > stepIndex(gate.match.type);
-    if (!launchPreview && !gate.allowed && !movingBack) {
+    if (!gate.allowed && !movingBack) {
       await revealProgressRequirements(gate.missing);
       return;
     }
@@ -1768,7 +1634,6 @@ async function jumpToValidationIssue(control) {
     showToast('Không tìm thấy trường cần sửa. Hãy kiểm tra lại đối tượng.');
     return;
   }
-  launchPreview?.revealField(state, clientId, fieldPath);
   state.ui.treeOpen = false;
   state.ui.reviewOpen = false;
   state.ui.progressReviewMode = false;
@@ -1787,13 +1652,6 @@ async function jumpToValidationIssue(control) {
   }
   if (useCampaignSeedingPicker && target.matches('[data-campaign-seeding-template-picker]')) {
     target.open = true;
-  }
-  if (launchPreview) {
-    let ancestor = target.parentElement;
-    while (ancestor && ancestor !== workspace) {
-      if (ancestor.tagName === 'DETAILS') ancestor.open = true;
-      ancestor = ancestor.parentElement;
-    }
   }
   const highlightTarget = target.closest('.field, .smart-resource-picker, .media-dropzone, .location-editor, .conversation-composer, .template-card-picker, .template-card-dropdown, .editor-section') ?? target;
   workspace.querySelectorAll('.is-validation-highlight').forEach((element) => element.classList.remove('is-validation-highlight'));
@@ -4807,8 +4665,6 @@ async function initializeWorkspace() {
     state.connected = session.connected === true;
     state.metaUser = session.metaUser ?? null;
     draftStorage.restore(state, session.metaUser?.id ?? 'anonymous');
-    quickCreate?.applyEntryMode(state, location.search);
-    launchPreview?.applyEntrySection(state, location.search);
     sessionLoading = false;
     render();
     await loadResources();
@@ -4833,7 +4689,6 @@ for (const eventName of ['input', 'change', 'click']) {
 const startupParams = new URLSearchParams(window.location.search);
 const preserveDemoQuery = startupParams.get('demoResources') === '1'
   || startupParams.get('demoProgress') === '1'
-  || startupParams.get('frontend') === 'launch-control'
   || startupParams.get('realResources') === '1';
 if (!preserveDemoQuery && (window.location.search || window.location.hash)) {
   window.history.replaceState({}, '', window.location.pathname);
@@ -4935,11 +4790,8 @@ function positionFloatingDropdown(root) {
   panel.style.removeProperty('--floating-panel-max-height');
   const triggerRect = trigger.getBoundingClientRect();
   const viewportPadding = 12;
-  // Launch Control scrolls its forms below a fixed entity header. Popovers
-  // must fit that scroll viewport, not the whole window behind the header.
-  const scrollRect = launchPreview ? root.closest('.workspace-editor')?.getBoundingClientRect() : null;
-  const viewportTop = scrollRect ? Math.max(0, scrollRect.top) : 0;
-  const viewportBottom = scrollRect ? Math.min(window.innerHeight, scrollRect.bottom) : window.innerHeight;
+  const viewportTop = 0;
+  const viewportBottom = window.innerHeight;
   const spaceBelow = Math.max(0, viewportBottom - triggerRect.bottom - viewportPadding);
   const spaceAbove = Math.max(0, triggerRect.top - viewportTop - viewportPadding);
   const desiredHeight = Math.min(panel.scrollHeight || 320, 420);
@@ -5698,13 +5550,6 @@ workspace.addEventListener('toggle', (event) => {
 document.addEventListener('scroll', (event) => {
   const target = event.target instanceof Element ? event.target : null;
   if (target?.closest('.expand-select-expand, .smart-resource-panel, .age-panel, .template-card-dropdown-panel, .dt-panel')) return;
-  if (launchPreview && target?.matches('.workspace-editor')) {
-    // Native focus/scroll-into-view may move the form when a picker opens.
-    // Reposition within the new viewport instead of swallowing its first click.
-    target.querySelectorAll('[data-expand-select].is-open, [data-age-dropdown].open, [data-datetime-picker].open, [data-template-card-dropdown][open]')
-      .forEach((root) => positionFloatingDropdown(root));
-    return;
-  }
   closeAllFloatingDropdowns();
 }, true);
 

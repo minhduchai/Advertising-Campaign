@@ -1,6 +1,6 @@
 import { applyFixedWebsiteTracking } from './website-tracking.js';
 const PREFIX = 'meta-ads-workspace-v1:';
-const uiKeys = ['activeWorkspace', 'collapsedCampaignIds', 'collapsedAdSetIds', 'treeCollapsed', 'launchSections', 'launchMode'];
+const uiKeys = ['activeWorkspace', 'collapsedCampaignIds', 'collapsedAdSetIds', 'treeCollapsed'];
 
 function serialize(value) {
   return JSON.stringify(value, (key, entry) => {

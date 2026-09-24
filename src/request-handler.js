@@ -50,12 +50,7 @@ import { createAddressGeocoder } from './address-geocoder.js';
 
 const projectDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const publicDirectory = resolve(projectDirectory, 'public');
-const publicFiles = new Set(['/draft-storage.js', '/app.css', '/launch-control.css', '/app.js', '/api.js', '/api-client.js', '/activity-history.js', '/audience.js', '/conversation.js', '/local-demo-resources.js', '/run-progress.js', '/seeding.js', '/seeding-runner.js', '/state.js', '/telegram-upload-client.js', '/theme.js', '/website-tracking.js', '/workspace.js', '/workspace-progress.js', '/workspace-view.js']);
-publicFiles.add('/launch-preview.js');
-publicFiles.add('/quick-create.js');
-publicFiles.add('/quick-create.css');
-publicFiles.add('/launch-preview.css');
-publicFiles.add('/launch-concept.css');
+const publicFiles = new Set(['/draft-storage.js', '/app.css', '/app.js', '/api.js', '/api-client.js', '/activity-history.js', '/audience.js', '/conversation.js', '/local-demo-resources.js', '/run-progress.js', '/seeding.js', '/seeding-runner.js', '/state.js', '/telegram-upload-client.js', '/theme.js', '/website-tracking.js', '/workspace.js', '/workspace-progress.js', '/workspace-view.js']);
 publicFiles.add('/location-map.js');
 publicFiles.add('/assets/lg-clinic-logo-128.png');
 publicFiles.add('/assets/lg-clinic-logo.png');

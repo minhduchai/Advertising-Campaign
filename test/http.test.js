@@ -136,17 +136,14 @@ test('does not create competing sessions for static assets or health checks', as
   });
   context.after(() => server.close());
 
-  const [css, launchCss, module, health] = await Promise.all([
+  const [css, module, health] = await Promise.all([
     request(server, '/app.css'),
-    request(server, '/launch-control.css'),
     request(server, '/workspace.js'),
     request(server, '/health')
   ]);
 
   assert.equal(createdSessions, 0);
   assert.equal(css.sessionCookie, null);
-  assert.equal(launchCss.sessionCookie, null);
-  assert.equal(launchCss.status, 200);
   assert.equal(module.sessionCookie, null);
   assert.equal(health.sessionCookie, null);
   assert.deepEqual(health.body, { ok: true });

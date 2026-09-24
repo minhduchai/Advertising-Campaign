@@ -2296,7 +2296,7 @@ textarea:focus-visible,
   }
 }
 
-/* Seeding workspace — UI/UX Pro Max design-system pass */
+/* Seeding workspace */
 .workspace-seeding-shell {
   width: min(100%, 1080px);
   padding: var(--space-6) var(--space-6) 88px;
@@ -9192,7 +9192,7 @@ textarea:focus-visible {
   display: none;
 }
 
-/* Campaign workspace — UI/UX Pro Max design-system pass */
+/* Campaign workspace */
 .workspace-shell:not([hidden]) {
   background: var(--color-canvas);
 }
