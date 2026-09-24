@@ -760,6 +760,8 @@ historyWorkspace.addEventListener('click', async (event) => {
     state.activityHistory.detail = null;
     state.activityHistory.error = null;
     renderHistoryWorkspace({ resetScroll: true });
+    // The standalone report only shows before the list has loaded.
+    if (!state.activityHistory.loaded) await loadActivityHistory();
   }
 });
 

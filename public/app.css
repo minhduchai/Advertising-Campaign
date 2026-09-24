@@ -6890,6 +6890,10 @@ textarea:focus-visible {
   justify-content: center;
 }
 
+.history-back-row {
+  margin-bottom: 16px;
+}
+
 @media (max-width: 760px) {
   .activity-history-workspace {
     padding: 16px;

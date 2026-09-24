@@ -736,3 +736,47 @@ test('offers "Chạy tiếp" only for unfinished runs whose workflow lease has e
   assert.match(html, /data-action="resume-run-workflow" data-run-id="run-stalled"/);
   assert.match(html, />Chạy tiếp</);
 });
+
+test('an empty date filter keeps the list and its filter instead of a stale selected run', () => {
+  const history = createActivityHistoryState();
+  history.loaded = true;
+  history.selectedRunId = 'run-yesterday';
+  history.selectedCampaignClientId = 'campaign-a';
+  history.filters = { from: '2026-09-24', to: '2026-09-24' };
+  history.detail = {
+    id: 'run-yesterday', createdAt: 1,
+    snapshot: { campaigns: [{ clientId: 'campaign-a', name: 'Campaign A', adSets: [] }] },
+    nodes: []
+  };
+
+  const html = renderActivityHistory(history);
+
+  assert.match(html, /data-action="toggle-history-date-picker"/);
+  assert.match(html, /data-action="clear-history-filter"/);
+  assert.match(html, /Chưa có lịch sử phù hợp/);
+  assert.doesNotMatch(html, /<th>Tên nhóm quảng cáo<\/th>/);
+});
+
+test('reloading the list while a run is selected shows the loading list, not the stale run', () => {
+  const history = createActivityHistoryState();
+  history.loaded = true;
+  history.loading = true;
+  history.selectedRunId = 'run-a';
+  history.detail = { id: 'run-a', createdAt: 1, snapshot: { campaigns: [] }, nodes: [] };
+
+  const html = renderActivityHistory(history);
+
+  assert.match(html, /Đang tải lịch sử/);
+  assert.match(html, /data-action="toggle-history-date-picker"/);
+});
+
+test('a standalone run report always offers a way back to the list', () => {
+  const history = createActivityHistoryState();
+  history.selectedRunId = 'run-direct';
+  history.detail = { id: 'run-direct', createdAt: 1, snapshot: { campaigns: [] }, nodes: [] };
+
+  assert.match(renderActivityHistory(history), /data-action="back-history-list"/);
+  history.detail = null;
+  history.error = { message: 'Không tải được' };
+  assert.match(renderActivityHistory(history), /data-action="back-history-list"/);
+});

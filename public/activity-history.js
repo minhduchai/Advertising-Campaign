@@ -154,6 +154,9 @@ export function activityHistoryQuery(filters, offset = 0) {
 export function renderActivityHistory(history, { adAccounts = [] } = {}) {
   const accountNames = new Map(adAccounts.map((account) => [String(account.id), account.name]));
   const totalLabel = history.items.length > 0 ? `${history.items.length} lượt tạo đang hiển thị` : 'Theo dõi toàn bộ lượt tạo quảng cáo';
+  // Standalone report only for a run opened before any list loaded. An empty
+  // filter result or an in-flight reload must keep the list and its date filter.
+  const standaloneDetail = history.selectedRunId && !history.loaded && !history.loading && history.items.length === 0;
   return `
     <div class="history-shell">
       <header class="history-header">
@@ -169,7 +172,7 @@ export function renderActivityHistory(history, { adAccounts = [] } = {}) {
           </button>
         </div>
       </header>
-      ${history.selectedRunId && history.items.length === 0
+      ${standaloneDetail
       ? renderHistoryDetail(history, accountNames)
       : renderHistoryList(history, accountNames)}
     </div>`;
@@ -520,11 +523,13 @@ function renderInlineCampaignDetail(history, accountNames, runId, campaignClient
 }
 
 function renderHistoryDetail(history, accountNames) {
-  if (history.detailLoading) return '<div class="history-loading">Đang tải báo cáo...</div>';
-  if (history.error) return renderHistoryError(history.error);
+  const back = '<div class="history-back-row"><button type="button" class="button-secondary" data-action="back-history-list">Quay lại danh sách</button></div>';
+  if (history.detailLoading) return `${back}<div class="history-loading">Đang tải báo cáo...</div>`;
+  if (history.error) return back + renderHistoryError(history.error);
   const run = history.detail;
-  if (!run) return '<div class="history-empty"><strong>Không tìm thấy báo cáo</strong></div>';
+  if (!run) return `${back}<div class="history-empty"><strong>Không tìm thấy báo cáo</strong></div>`;
   return `
+    ${back}
     ${renderPublicationSync(history, run)}
     ${renderHistorySeedingAlert(run)}
     ${renderHistoryReport(run, accountNames, history.selectedCampaignClientId, { history })}`;
