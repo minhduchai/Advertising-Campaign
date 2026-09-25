@@ -1,5 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const requiredKeys = [
   'META_APP_ID',
@@ -82,6 +83,9 @@ export function loadConfig(environment = process.env) {
     sessionSecret: environment.SESSION_SECRET,
     port: Number(environment.PORT ?? 3000),
     databasePath: databaseUrl ? null : resolve(runtimeDirectory, 'meta-ads.sqlite'),
+    metaReadCacheDirectory: isProduction
+      ? resolve(fileURLToPath(new URL('..', import.meta.url)), environment.RUNTIME_DIRECTORY ?? 'data', 'meta-read-cache')
+      : null,
     isProduction,
     databaseUrl,
     r2Enabled,

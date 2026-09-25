@@ -661,8 +661,6 @@ export function setAccountResources(state, accountId, resources) {
     loaded: resources?.loaded ?? false,
     customAudiences: resources?.customAudiences ?? [],
     savedAudiences: resources?.savedAudiences ?? [],
-    pixels: resources?.pixels ?? [],
-    pixelsLoaded: resources?.pixelsLoaded ?? false,
     targetingResults: resources?.targetingResults ?? [],
     locationResults: resources?.locationResults ?? []
   };

@@ -1088,6 +1088,45 @@ export function createPostgresDatabase(sql) {
       `;
     },
 
+    async listPublicationLookups(runId) {
+      return (await sql`
+        SELECT client_id, attempts, next_at FROM publication_recovery WHERE run_id = ${runId}
+      `).map(mapPublicationLookup);
+    },
+
+    // Leases due lookups; returns only the client IDs this caller now owns.
+    async claimPublicationLookups(runId, clientIds, { now, leaseUntil }) {
+      return (await sql`
+        INSERT INTO publication_recovery (run_id, client_id, attempts, next_at)
+        SELECT ${runId}, client_id, 0, ${leaseUntil} FROM unnest(${clientIds}::text[]) AS client_id
+        ON CONFLICT (run_id, client_id) DO UPDATE SET next_at = EXCLUDED.next_at
+        WHERE publication_recovery.next_at <= ${now}
+        RETURNING client_id
+      `).map((row) => row.client_id);
+    },
+
+    async schedulePublicationLookups(runId, clientIds, { attempts, nextAt, code }) {
+      await sql`
+        INSERT INTO publication_recovery (run_id, client_id, attempts, next_at, last_error)
+        SELECT ${runId}, client_id, ${attempts}, ${nextAt}, ${code ?? null} FROM unnest(${clientIds}::text[]) AS client_id
+        ON CONFLICT (run_id, client_id) DO UPDATE SET
+          attempts = EXCLUDED.attempts, next_at = EXCLUDED.next_at, last_error = EXCLUDED.last_error
+      `;
+    },
+
+    // Metadata only, guarded by the Ad's identity, so a concurrent publisher's status, creative and error survive.
+    async savePublication(runId, nodes, { postId, permalinkUrl }) {
+      await sql`
+        UPDATE node_results SET
+          post_id = COALESCE(NULLIF(node_results.post_id, ''), ${postId ?? null}),
+          permalink_url = COALESCE(NULLIF(node_results.permalink_url, ''), ${permalinkUrl ?? null})
+        FROM unnest(${nodes.map((node) => node.clientId)}::text[], ${nodes.map((node) => node.remoteId)}::text[])
+          AS target(client_id, remote_id)
+        WHERE node_results.run_id = ${runId} AND node_results.client_id = target.client_id
+          AND node_results.remote_id = target.remote_id AND node_results.status = 'created'
+      `;
+    },
+
     // execution_json is the full draft (large); read-only endpoints pass { execution: false }.
     async getRun(runId, { execution = true } = {}) {
       const [runs, nodes] = await Promise.all([sql`
@@ -1339,6 +1378,10 @@ function seedingPostConflictError() {
   const error = new Error('Post already has a different Campaign selection in this run');
   error.code = 'SEEDING_POST_CONFLICT';
   return error;
+}
+
+function mapPublicationLookup(row) {
+  return { clientId: row.client_id, attempts: Number(row.attempts), nextAt: Number(row.next_at) };
 }
 
 function mapNodeResult(row) {

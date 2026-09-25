@@ -124,6 +124,34 @@ test('prepare syncs publications, rereads the run, and next processes exactly on
   assert.doesNotMatch(JSON.stringify([prepared.body, next.body]), /USER-TOKEN|PAGE-TOKEN|signed=1|access_token|blob:/i);
 });
 
+test('repeated prepare polls while Post IDs are missing look each Post up once per backoff', async (context) => {
+  const adClientIds = Array.from({ length: 12 }, (_, index) => `ad-${index + 1}`);
+  let lookups = 0;
+  const fixture = await routeFixture(context, {
+    runSnapshot: snapshot([{
+      ...campaignSnapshot(),
+      adSets: [{ clientId: 'campaign-1-adset', ads: adClientIds.map((clientId) => ({ clientId, creativeGroupId: clientId })) }]
+    }]),
+    nodes: adClientIds.map((clientId) => ({
+      clientId, parentClientId: 'campaign-1-adset', type: 'ad', status: 'created', name: clientId,
+      remoteId: `remote-${clientId}`, postId: null, permalinkUrl: null, error: null
+    })),
+    metaOverrides: {
+      async getAdPublication() {
+        lookups += 1;
+        return { postId: null, permalinkUrl: null };
+      }
+    }
+  });
+
+  for (let poll = 0; poll < 4; poll += 1) {
+    const prepared = await request(fixture.server, '/api/runs/run-1/seeding/prepare', jsonOptions(fixture.ownerCookie));
+    assert.equal(prepared.status, 200);
+    assert.equal(prepared.body.seeding.waitingPostCount, 12);
+  }
+  assert.equal(lookups, 12);
+});
+
 test('prepare never exposes publication-sync credentials or raw errors', async (context) => {
   const fixture = await routeFixture(context, {
     metaOverrides: {

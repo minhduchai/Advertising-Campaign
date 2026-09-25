@@ -1,28 +1,21 @@
-// Recover publication metadata only; never create ads or post comments.
-export async function recoverPublications({ jobs, lookup, save, schedule, now = Date.now }) {
-  const result = { checked: 0, resolved: 0, pending: 0, errors: 0 };
-  for (const job of jobs) {
-    result.checked += 1;
-    let code = null;
-    try {
-      const publication = await lookup(job);
-      if (publication?.postId && publication?.permalinkUrl) {
-        await save(job, publication);
-        await schedule(job, { attempts: 0, nextAt: now(), code: null });
-        result.resolved += 1;
-        continue;
-      }
-    } catch (error) {
-      result.errors += 1;
-      code = String(error.meta?.code ?? error.name ?? 'Error');
-    }
-    const attempts = Number(job.attempts ?? 0) + 1;
-    await schedule(job, {
-      attempts,
-      nextAt: now() + Math.min(3600000, 60000 * 2 ** Math.min(attempts - 1, 6)),
-      code
-    });
-    result.pending += 1;
+import { syncRunPublications } from './publication-sync.js';
+
+// Recover publication metadata only; never create ads or post comments. The worker shares the web routes'
+// grouped lookups, backoff and leases, within one lookup budget per tick.
+export async function recoverPublications({ runIds, db, metaClient, tokenFor, budget = 8, now = Date.now }) {
+  const result = { runs: 0, checked: 0, resolved: 0, pending: 0, errors: 0 };
+  for (const runId of runIds) {
+    if (budget <= 0) break;
+    const run = await db.getRun(runId, { execution: false });
+    const token = run ? await tokenFor(run.ownerMetaUserId) : null;
+    if (!token) continue;
+    const sync = await syncRunPublications({ run, token, metaClient, db, maxGroups: budget, now });
+    budget -= sync.attemptedGroups;
+    result.runs += 1;
+    result.checked += sync.attemptedGroups;
+    result.resolved += sync.resolvedGroups;
+    result.pending += sync.pendingGroups;
+    result.errors += sync.errors.length;
   }
   return result;
 }

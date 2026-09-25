@@ -29,6 +29,22 @@ test('Postgres getRun loads the run and nodes together and only selects the exec
   assert.match(sql.calls[1].text, /FROM node_results/);
 });
 
+test('Postgres claims only due Post ID lookups and saves Post IDs without touching status, creative or error', async () => {
+  const sql = createSqlStub([[{ client_id: 'ad-1' }], []]);
+  const db = createPostgresDatabase(sql);
+
+  assert.deepEqual(await db.claimPublicationLookups('run-1', ['ad-1', 'ad-2'], { now: 1_000, leaseUntil: 61_000 }), ['ad-1']);
+  assert.match(sql.calls[0].text, /DO UPDATE SET next_at = EXCLUDED\.next_at\s+WHERE publication_recovery\.next_at <= \?/);
+  assert.deepEqual(sql.calls[0].values, ['run-1', 61_000, ['ad-1', 'ad-2'], 1_000]);
+
+  await db.savePublication('run-1', [{ clientId: 'ad-1', remoteId: 'remote-1' }], {
+    postId: '1_2', permalinkUrl: 'https://www.facebook.com/1/posts/2'
+  });
+  assert.match(sql.calls[1].text, /SET\s+post_id = COALESCE\(NULLIF\(node_results\.post_id, ''\), \?\),\s+permalink_url = COALESCE/);
+  assert.match(sql.calls[1].text, /node_results\.remote_id = target\.remote_id AND node_results\.status = 'created'/);
+  assert.doesNotMatch(sql.calls[1].text, /creative_id|error_json|SET status/);
+});
+
 test('Postgres claims each workflow nonce atomically and expires old claims', async () => {
   const sql = createSqlStub([[], [{ nonce_hash: 'hash' }], [], []]);
   const db = createPostgresDatabase(sql);

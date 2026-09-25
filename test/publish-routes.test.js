@@ -123,6 +123,10 @@ function createPublishRouteServer(context, {
     updateRunStatus: () => undefined,
     getRun,
     listSeedingJobs: () => [],
+    listPublicationLookups: () => [],
+    claimPublicationLookups: (_runId, clientIds) => clientIds,
+    schedulePublicationLookups: () => undefined,
+    savePublication: () => undefined,
     ...dbOverrides
   };
   const metaClient = {
@@ -176,6 +180,18 @@ function deferred() {
   let resolve;
   const promise = new Promise((resolvePromise) => { resolve = resolvePromise; });
   return { promise, resolve };
+}
+
+// Meta resources the workspace loads first; run snapshots name Pages from this cached catalog.
+function pageCatalogMeta(pages) {
+  return {
+    listAdAccounts: async () => [],
+    listGlobalPageCatalog: async () => ({
+      pages: pages.map(([id, name]) => ({ id, name, sources: ['MANAGED'], canAdvertise: true, unavailableReason: null })),
+      discovery: { requiresBusinessReconnect: false, warnings: [], counts: {} }
+    }),
+    getPermissionStatus: async () => ({ pages_manage_engagement: true })
+  };
 }
 
 function twoCampaignDraft() {
@@ -587,16 +603,10 @@ test('persists a sanitized report snapshot before Meta publication', async (cont
     db: {
       createRun: (run) => { createdRun = run; return { id: 'run-report' }; }
     },
-    metaClient: {
-      getPagePublishingContext: async (_token, pageIds) => ({
-        permissionGranted: true,
-        pages: new Map(pageIds.map((pageId) => [String(pageId), {
-          name: 'Duck Tool', accessToken: '', tasks: []
-        }]))
-      })
-    }
+    metaClient: pageCatalogMeta([['page_1', 'Duck Tool']])
   });
 
+  assert.equal((await request(server, '/api/resources', { headers })).status, 200);
   const response = await request(server, '/api/runs', {
     method: 'POST',
     headers: { ...headers, 'content-type': 'application/json' },
@@ -806,87 +816,6 @@ test('fails an NDJSON run when a created node cannot be persisted', async (conte
   assert.equal(events.some((event) => event.type === 'run_completed'), false);
   assert.deepEqual(requestedRunStatuses, ['failed']);
   assert.deepEqual(attemptedNodeStatuses, ['creating', 'created']);
-});
-
-test('fails the persisted run before any Meta write when its application deadline is exhausted', async (context) => {
-  let campaignCalls = 0;
-  const requestedRunStatuses = [];
-  const { server, headers } = createPublishRouteServer(context, {
-    config: { publishDeadlineMs: 0 },
-    metaClient: {
-      createCampaign: async () => { campaignCalls += 1; return 'campaign-remote'; }
-    },
-    db: {
-      updateRunStatus: async (_runId, status) => requestedRunStatuses.push(status)
-    }
-  });
-  const response = await request(server, '/api/runs', {
-    method: 'POST',
-    headers: {
-      ...headers,
-      'content-type': 'application/json',
-      accept: 'application/x-ndjson'
-    },
-    body: JSON.stringify(draft)
-  });
-
-  const events = parseNdjson(response.body);
-  assert.deepEqual(events.map((event) => event.type), ['run_started', 'run_failed']);
-  assert.match(events[1].error.message, /thời gian/i);
-  assert.equal(campaignCalls, 0);
-  assert.deepEqual(requestedRunStatuses, ['failed']);
-});
-
-test('clamps a configured publication deadline to the application maximum', () => {
-  assert.equal(requestHandler.clampPublishDeadlineMs(undefined), requestHandler.PUBLISH_DEADLINE_MS);
-  assert.equal(requestHandler.clampPublishDeadlineMs(-1), 0);
-  assert.equal(requestHandler.clampPublishDeadlineMs(12_000), 12_000);
-  assert.equal(
-    requestHandler.clampPublishDeadlineMs(requestHandler.PUBLISH_DEADLINE_MS * 2),
-    requestHandler.PUBLISH_DEADLINE_MS
-  );
-});
-
-test('aborts a delayed final Meta Ad call and fails the streamed run', async (context) => {
-  let adStarted = false;
-  const requestedRunStatuses = [];
-  const { server, headers } = createPublishRouteServer(context, {
-    config: { publishDeadlineMs: 80 },
-    metaClient: {
-      createAd: async (_token, _accountId, _params, options = {}) => {
-        adStarted = true;
-        assert.ok(options.signal);
-        return new Promise((resolve, reject) => {
-          const timer = setTimeout(() => resolve('ad-too-late'), 250);
-          options.signal.addEventListener('abort', () => {
-            clearTimeout(timer);
-            const error = new Error('The operation was aborted');
-            error.name = 'AbortError';
-            reject(error);
-          }, { once: true });
-        });
-      }
-    },
-    db: {
-      updateRunStatus: async (_runId, status) => requestedRunStatuses.push(status)
-    }
-  });
-  const response = await request(server, '/api/runs', {
-    method: 'POST',
-    headers: {
-      ...headers,
-      'content-type': 'application/json',
-      accept: 'application/x-ndjson'
-    },
-    body: JSON.stringify(draft)
-  });
-
-  const events = parseNdjson(response.body);
-  assert.equal(adStarted, true);
-  assert.equal(events.some((event) => event.type === 'run_completed'), false);
-  assert.equal(events.at(-1).type, 'run_failed');
-  assert.match(events.at(-1).error.message, /thời gian/i);
-  assert.deepEqual(requestedRunStatuses, ['failed']);
 });
 
 test('returns only the connected owner run snapshot', async (context) => {
@@ -1169,7 +1098,7 @@ test('refreshes missing Post IDs for the connected owner without exposing the to
   const { server, headers } = createPublishRouteServer(context, {
     getRun: run,
     db: {
-      updateNodeResult: (_runId, node) => { storedNode = node; }
+      savePublication: (_runId, _nodes, { postId, permalinkUrl }) => { storedNode = { ...storedNode, postId, permalinkUrl }; }
     },
     metaClient: {
       getAdPublication: async (token, remoteId) => {
@@ -1288,15 +1217,10 @@ test('snapshots selected Page details without account-specific Page authorizatio
       createRun: (run) => { createdRun = run; return { id: 'run-multi-account' }; }
     },
     metaClient: {
+      ...pageCatalogMeta([['page_1', 'LG Clinic'], ['page_2', 'LG Clinic Quận 7']]),
       getPagePublishingContext: async (_token, pageIds) => {
         publishingContextPageIds.push(...pageIds);
-        return {
-          permissionGranted: true,
-          pages: new Map([
-            ['page_1', { name: 'LG Clinic', accessToken: '', tasks: [] }],
-            ['page_2', { name: 'LG Clinic Quận 7', accessToken: '', tasks: [] }]
-          ])
-        };
+        return { permissionGranted: true, pages: new Map() };
       },
       createCampaign: async (_token, accountId) => { writeAccounts.push(['campaign', accountId]); return `campaign-${accountId}`; },
       createAdSet: async (_token, accountId) => { writeAccounts.push(['adSet', accountId]); return `adset-${accountId}`; },
@@ -1306,6 +1230,7 @@ test('snapshots selected Page details without account-specific Page authorizatio
     }
   });
 
+  assert.equal((await request(server, '/api/resources', { headers })).status, 200);
   const response = await request(server, '/api/runs', {
     method: 'POST',
     headers: { ...headers, 'content-type': 'application/json' },
@@ -1313,7 +1238,7 @@ test('snapshots selected Page details without account-specific Page authorizatio
   });
 
   assert.equal(response.status, 201);
-  assert.deepEqual(publishingContextPageIds.sort(), ['page_1', 'page_2']);
+  assert.deepEqual(publishingContextPageIds, [], 'DARK ads need no Page token or posting permission');
   assert.equal(createdRun.adAccountId, null);
   assert.equal(createdRun.snapshot.adAccountId, null);
   assert.deepEqual(createdRun.snapshot.campaigns.map((campaign) => campaign.adAccountId), ['act_1', 'act_2']);
@@ -1322,6 +1247,57 @@ test('snapshots selected Page details without account-specific Page authorizatio
     ['campaign', 'act_1'], ['adSet', 'act_1'], ['image', 'act_1'], ['creative', 'act_1'], ['ad', 'act_1'],
     ['campaign', 'act_2'], ['adSet', 'act_2'], ['image', 'act_2'], ['creative', 'act_2'], ['ad', 'act_2']
   ]);
+});
+
+test('a DARK run skips the Page publishing context and falls back to the Page ID until the catalog is loaded', async (context) => {
+  let contextCalls = 0;
+  const createdRuns = [];
+  const { server, headers } = createPublishRouteServer(context, {
+    db: {
+      createRun: (run) => { createdRuns.push(run); return { id: `run-dark-${createdRuns.length}` }; }
+    },
+    metaClient: {
+      ...pageCatalogMeta([['page_1', 'LG Clinic']]),
+      getPagePublishingContext: async () => { contextCalls += 1; return { permissionGranted: true, pages: new Map() }; }
+    }
+  });
+  const publish = () => request(server, '/api/runs', {
+    method: 'POST',
+    headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify(draft)
+  });
+
+  assert.equal((await publish()).status, 201);
+  assert.equal((await request(server, '/api/resources', { headers })).status, 200);
+  assert.equal((await publish()).status, 201);
+
+  assert.deepEqual(createdRuns.map((run) => run.snapshot.campaigns[0].pageName), ['page_1', 'LG Clinic']);
+  assert.equal(contextCalls, 0);
+});
+
+test('Public Test still checks the Page publishing permission before any Meta write', async (context) => {
+  let contextCalls = 0;
+  let writes = 0;
+  const publicDraft = structuredClone(draft);
+  publicDraft.campaigns[0].adSets[0].ads[0].publicationMode = 'PUBLIC_TEST';
+  const { server, headers } = createPublishRouteServer(context, {
+    metaClient: {
+      getPagePublishingContext: async () => { contextCalls += 1; return { permissionGranted: false, pages: new Map() }; },
+      createCampaign: async () => { writes += 1; return 'campaign-remote'; }
+    }
+  });
+
+  const response = await request(server, '/api/runs', {
+    method: 'POST',
+    headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify(publicDraft)
+  });
+
+  assert.equal(response.status, 403);
+  assert.match(response.body.errors[0].message, /pages_manage_posts/);
+  assert.equal(contextCalls, 1);
+  assert.equal(writes, 0);
+  assert.doesNotMatch(JSON.stringify(response.body), /EAAG-token/);
 });
 
 test('allows a Page to be combined with any Campaign account', async (context) => {

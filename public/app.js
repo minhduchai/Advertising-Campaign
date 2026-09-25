@@ -2466,8 +2466,6 @@ async function loadAdAccountResources(requestedAccountId = activeCampaign(state)
           loaded: true,
           customAudiences: payload.customAudiences ?? [],
           savedAudiences: payload.savedAudiences ?? [],
-          pixels: payload.pixels ?? [],
-          pixelsLoaded: payload.pixelsLoaded === true,
           promotablePageIds: payload.promotablePageIds ?? [],
           pageEligibilityKnown: payload.pageEligibilityKnown === true,
           targetingResults: currentResources?.targetingResults ?? [],

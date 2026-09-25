@@ -854,6 +854,58 @@ test('retries a throttled Meta call after the backoff and gives up when the wait
   assert.equal(slowCalls, 1);
 });
 
+test('stops inline throttle retries at the limit even when Retry-After stays short', async () => {
+  let calls = 0;
+  const client = createMetaClient(testConfig(), {
+    fetchImpl: async () => {
+      calls += 1;
+      if (calls > 10) throw new Error('retry loop did not stop');
+      return Response.json({ error: { message: 'Calls to this api have exceeded the rate limit', code: 613 } }, {
+        status: 400, headers: { 'retry-after': '0.01' }
+      });
+    }
+  });
+
+  await assert.rejects(
+    () => client.createCampaign('token', 'act_1', new URLSearchParams({ name: 'C' })),
+    (error) => error.name === 'MetaThrottleError' && error.retryAfterMs === 10 && error.meta?.code === 613
+  );
+  assert.equal(calls, 2, 'one request plus one inline retry');
+});
+
+test('never resends a write after a network error, since Meta may already have created it', async () => {
+  let calls = 0;
+  const client = createMetaClient(testConfig(), {
+    fetchImpl: async () => {
+      calls += 1;
+      throw new TypeError('fetch failed');
+    }
+  });
+
+  await assert.rejects(() => client.createPageComment('page-token', '1_2', { message: 'Hi' }), /fetch failed/);
+  assert.equal(calls, 1);
+});
+
+test('aborts an inline throttle wait without sending another request', async () => {
+  let calls = 0;
+  const controller = new AbortController();
+  const client = createMetaClient(testConfig(), {
+    fetchImpl: async () => {
+      calls += 1;
+      setTimeout(() => controller.abort(), 5);
+      return Response.json({ error: { message: 'User request limit reached', code: 17 } }, {
+        status: 400, headers: { 'retry-after': '10' }
+      });
+    }
+  });
+
+  await assert.rejects(
+    () => client.createCampaign('token', 'act_1', new URLSearchParams({ name: 'C' }), { signal: controller.signal }),
+    { name: 'AbortError' }
+  );
+  assert.equal(calls, 1);
+});
+
 test('does not retry an app-wide code 4 limit inside the same request', async () => {
   let calls = 0;
   const client = createMetaClient(testConfig(), {

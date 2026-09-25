@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadConfig } from '../src/config.js';
+import { tmpdir } from 'node:os';
 
 function validEnvironment(overrides = {}) {
   return {
@@ -58,6 +59,18 @@ test('production disables the SQLite database path', () => {
   }));
 
   assert.equal(config.databasePath, null);
+  const cwd = process.cwd();
+  try {
+    process.chdir(tmpdir());
+    const fromCron = loadConfig(validEnvironment({
+      NODE_ENV: 'production', DATABASE_URL: 'postgresql://example.invalid/app',
+      R2_ACCOUNT_ID: 'account', R2_BUCKET_NAME: 'bucket', R2_ACCESS_KEY_ID: 'key',
+      R2_SECRET_ACCESS_KEY: 'secret', R2_ENDPOINT: 'https://account.r2.cloudflarestorage.com'
+    }));
+    assert.equal(fromCron.metaReadCacheDirectory, config.metaReadCacheDirectory);
+  } finally {
+    process.chdir(cwd);
+  }
 });
 
 test('production uses R2 media storage', () => {

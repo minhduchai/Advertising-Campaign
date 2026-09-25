@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { publishDraft } from '../src/publisher.js';
+import { prepareWorkflowMedia } from '../src/workflow-media.js';
 
 const ad = {
   clientId: 'ad-1',
@@ -591,8 +592,136 @@ test('does not share a creative when account, Page, or visible content differs',
     }
   });
 
-  assert.equal(calls.filter((call) => call === 'image').length, 4);
+  assert.equal(calls.filter((call) => call === 'image').length, 2, 'one image upload per ad account');
   assert.equal(calls.filter((call) => call === 'creative').length, 4);
+});
+
+test('uploads a shared image once per ad account while concurrent creatives stay separate', async () => {
+  const pageDraft = shareAllAds(draftWithCampaigns([
+    { adAccountId: 'act_1', pageId: 'page-1', clientId: 'campaign-1', adSetId: 'adset-1' },
+    { adAccountId: 'act_1', pageId: 'page-2', clientId: 'campaign-2', adSetId: 'adset-2' },
+    { adAccountId: 'act_2', pageId: 'page-1', clientId: 'campaign-3', adSetId: 'adset-3' }
+  ]));
+  const uploads = [];
+  const creativeHashes = [];
+
+  await publishDraft({
+    draft: pageDraft,
+    token: 'token',
+    runId: 'run-image-once',
+    ownerMetaUserId: 'owner-1',
+    concurrency: 3,
+    getMedia: imageFixture,
+    metaClient: {
+      createCampaign: async () => 'remote-campaign',
+      createAdSet: async () => 'remote-adset',
+      uploadImage: async (_token, accountId) => {
+        uploads.push(accountId);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return `hash-${accountId}`;
+      },
+      createCreative: async (_token, accountId, params) => {
+        creativeHashes.push([accountId, JSON.parse(params.get('object_story_spec')).link_data.image_hash]);
+        return `creative-${creativeHashes.length}`;
+      },
+      createAd: async () => 'remote-ad'
+    }
+  });
+
+  assert.deepEqual(uploads.sort(), ['act_1', 'act_2']);
+  assert.deepEqual(creativeHashes.sort(), [['act_1', 'hash-act_1'], ['act_1', 'hash-act_1'], ['act_2', 'hash-act_2']]);
+});
+
+test('retries a failed image upload for the next creative instead of caching the failure', async () => {
+  const pageDraft = shareAllAds(draftWithCampaigns([
+    { adAccountId: 'act_1', pageId: 'page-1', clientId: 'campaign-1', adSetId: 'adset-1' },
+    { adAccountId: 'act_1', pageId: 'page-2', clientId: 'campaign-2', adSetId: 'adset-2' }
+  ]));
+  let uploads = 0;
+
+  const result = await publishDraft({
+    draft: pageDraft,
+    token: 'token',
+    runId: 'run-image-retry',
+    ownerMetaUserId: 'owner-1',
+    getMedia: imageFixture,
+    metaClient: {
+      createCampaign: async () => 'remote-campaign',
+      createAdSet: async () => 'remote-adset',
+      uploadImage: async () => {
+        uploads += 1;
+        if (uploads === 1) throw new Error('Meta image upload failed');
+        return 'image-hash';
+      },
+      createCreative: async () => 'remote-creative',
+      createAd: async () => 'remote-ad'
+    }
+  });
+
+  assert.equal(uploads, 2);
+  assert.deepEqual(result.nodes.filter((node) => node.type === 'ad').map((node) => node.status).sort(), ['created', 'failed']);
+});
+
+test('looks up the shared Post once when parallel Ads use the same creative', async () => {
+  const sharedDraft = shareAllAds(draftWithTwoAdSets([
+    { pageId: 'page_1', clientId: 'adset-1' },
+    { pageId: 'page_1', clientId: 'adset-2' },
+    { pageId: 'page_1', clientId: 'adset-3' }
+  ]));
+  let lookups = 0;
+
+  const result = await publishDraft({
+    draft: sharedDraft,
+    token: 'token',
+    runId: 'run-shared-lookup',
+    concurrency: 3,
+    getMedia: imageFixture,
+    metaClient: {
+      createCampaign: async () => 'remote-campaign',
+      createAdSet: async (_token, _account, params) => `remote-${params.get('name')}`,
+      uploadImage: async () => 'image-hash',
+      createCreative: async () => 'creative-shared',
+      createAd: async (_token, _account, params) => `ad-${params.get('name')}`,
+      getAdPublication: async () => {
+        lookups += 1;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return { postId: 'page_1_77', permalinkUrl: 'https://www.facebook.com/page_1/posts/77' };
+      }
+    }
+  });
+
+  assert.equal(lookups, 1);
+  assert.deepEqual(result.nodes.filter((node) => node.type === 'ad').map((node) => node.postId), ['page_1_77', 'page_1_77', 'page_1_77']);
+});
+
+test('keeps Ads that share a creative created when their shared Post lookup fails', async () => {
+  const sharedDraft = shareAllAds(draftWithTwoAdSets([
+    { pageId: 'page_1', clientId: 'adset-1' },
+    { pageId: 'page_1', clientId: 'adset-2' }
+  ]));
+  let lookups = 0;
+
+  const result = await publishDraft({
+    draft: sharedDraft,
+    token: 'token',
+    runId: 'run-shared-lookup-failure',
+    concurrency: 2,
+    getMedia: imageFixture,
+    metaClient: {
+      createCampaign: async () => 'remote-campaign',
+      createAdSet: async (_token, _account, params) => `remote-${params.get('name')}`,
+      uploadImage: async () => 'image-hash',
+      createCreative: async () => 'creative-shared',
+      createAd: async (_token, _account, params) => `ad-${params.get('name')}`,
+      getAdPublication: async () => { lookups += 1; throw new Error('Story is not ready'); }
+    }
+  });
+
+  assert.equal(lookups, 1);
+  assert.deepEqual(result.nodes.filter((node) => node.type === 'ad').map((node) => [node.status, node.postId]), [
+    ['created', undefined], ['created', undefined]
+  ]);
+  assert.equal(result.complete, true);
 });
 
 test('continues linked Ads after one Ad creation fails', async () => {
@@ -914,6 +1043,40 @@ test('uploads and polls one Meta video when independent Ads reuse the same media
   assert.deepEqual(saved, [['owner-1', 'media-image', 'act_1', 'video-1']]);
   assert.deepEqual(uploadedMedia.map((media) => media.sourceUrl), ['https://r2.example/video.mp4?signature=fresh-1']);
   assert.equal(result.nodes.filter((node) => node.type === 'ad' && node.status === 'created').length, 2);
+});
+
+test('a Workflow publish batch reuses the ready video and thumbnail found by media prepare', async () => {
+  const videoDraft = structuredClone(draft);
+  videoDraft.campaigns[0].adSets[0].ads[0].mediaId = 'media-ready-video';
+  const media = { id: 'media-ready-video', mimeType: 'video/mp4', name: 'ready.mp4' };
+  let statusChecks = 0;
+  let creativeParams;
+  const shared = {
+    runId: 'run-workflow-video',
+    ownerMetaUserId: 'owner-ready-video',
+    token: 'token',
+    getMetaVideoId: async () => 'meta-video-ready',
+    saveMetaVideoId: async () => {},
+    deleteMetaVideoId: async () => {},
+    metaClient: {
+      getVideoStatus: async () => {
+        statusChecks += 1;
+        return { status: { video_status: 'ready' }, thumbnail: { imageUrl: 'https://cdn.example/ready-thumb.jpg' } };
+      },
+      createCampaign: async () => 'remote-campaign',
+      createAdSet: async () => 'remote-adset',
+      createCreative: async (_token, _accountId, params) => { creativeParams = params; return 'remote-creative'; },
+      createAd: async () => 'remote-ad'
+    }
+  };
+
+  const prepared = await prepareWorkflowMedia({ ...shared, draft: videoDraft, getMedia: async () => media, updateNodeResult: async () => {} });
+  const result = await publishDraft({ ...shared, draft: videoDraft, getMedia: async () => media });
+
+  assert.equal(prepared.pending, false);
+  assert.equal(statusChecks, 1);
+  assert.match(creativeParams.get('object_story_spec'), /ready-thumb\.jpg/);
+  assert.equal(result.nodes.find((node) => node.type === 'ad').status, 'created');
 });
 
 test('removes a cached Meta video ID when Meta reports processing failure', async () => {

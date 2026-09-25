@@ -135,6 +135,57 @@ test('stops starting new uploads after the soft deadline and stays pending', asy
   assert.equal(calls.upload.length, 0);
 });
 
+test('does not recheck a ready video while another video is still processing', async () => {
+  const { base, calls } = harness({
+    media: {
+      m1: { id: 'm1', name: 'ready.mp4', mimeType: 'video/mp4' },
+      m2: { id: 'm2', name: 'slow.mp4', mimeType: 'video/mp4' }
+    },
+    videoIds: { m1: 'ready-video-1', m2: 'slow-video-2' },
+    statusByVideoId: { 'ready-video-1': 'ready' }
+  });
+  const draft = draftWith([{ clientId: 'a1', mediaId: 'm1' }, { clientId: 'a2', mediaId: 'm2' }]);
+
+  await prepareWorkflowMedia({ ...base, draft });
+  const second = await prepareWorkflowMedia({ ...base, draft });
+
+  assert.deepEqual(calls.status, ['ready-video-1', 'slow-video-2', 'slow-video-2'], 'the pending video is still polled');
+  assert.deepEqual([second.pending, second.ready, second.total], [true, 1, 2]);
+});
+
+test('does not upload a failed video again while another video is still processing', async () => {
+  const stored = { bad: 'bad-video-9', slow: 'slow-video-9' };
+  const calls = { upload: 0, status: [] };
+  const nodes = [];
+  const base = {
+    runId: 'run-1',
+    ownerMetaUserId: 'owner-1',
+    token: 'token',
+    getMedia: async (mediaId) => ({ id: mediaId, name: `${mediaId}.mp4`, mimeType: 'video/mp4' }),
+    getMetaVideoId: async (_owner, mediaId) => stored[mediaId] ?? null,
+    saveMetaVideoId: async (_owner, mediaId, _accountId, videoId) => { stored[mediaId] = videoId; },
+    deleteMetaVideoId: async (_owner, mediaId) => { delete stored[mediaId]; },
+    updateNodeResult: async (_runId, node) => { nodes.push(node); },
+    metaClient: {
+      uploadVideo: async () => { calls.upload += 1; return 'bad-video-10'; },
+      getVideoStatus: async (_token, videoId) => {
+        calls.status.push(videoId);
+        return { status: { video_status: videoId.startsWith('bad') ? 'error' : 'processing' } };
+      }
+    }
+  };
+  const draft = draftWith([{ clientId: 'a1', name: 'Ad 1', mediaId: 'bad' }, { clientId: 'a2', name: 'Ad 2', mediaId: 'slow' }]);
+
+  const first = await prepareWorkflowMedia({ ...base, draft });
+  // The workflow calls prepare again with the run's nodes, which now include the failed Ad.
+  const second = await prepareWorkflowMedia({ ...base, draft, existingNodes: nodes });
+
+  assert.equal(first.failed, 1);
+  assert.equal(second.pending, true);
+  assert.equal(calls.upload, 0);
+  assert.deepEqual(calls.status, ['bad-video-9', 'slow-video-9', 'slow-video-9']);
+});
+
 test('does not overwrite ads that already finished', async () => {
   const { base, calls } = harness({
     media: { m1: { id: 'm1', name: 'a.mp4', mimeType: 'video/mp4' } },

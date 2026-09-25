@@ -157,6 +157,14 @@ export async function applyPostgresSchema(sql) {
   await sql`ALTER TABLE node_results ADD COLUMN IF NOT EXISTS creative_id TEXT`;
   await sql`ALTER TABLE node_results ADD COLUMN IF NOT EXISTS creative_artifact_key TEXT`;
   await sql`ALTER TABLE node_results ADD COLUMN IF NOT EXISTS permalink_url TEXT`;
+  // Same definition the recovery cron has always created: Post ID lookup backoff and leases per Ad.
+  await sql`
+    CREATE TABLE IF NOT EXISTS publication_recovery (
+      run_id TEXT NOT NULL, client_id TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0, next_at BIGINT NOT NULL DEFAULT 0,
+      last_error TEXT, PRIMARY KEY (run_id, client_id)
+    )
+  `;
   await sql`
     CREATE TABLE IF NOT EXISTS conversation_templates (
       id TEXT PRIMARY KEY,
@@ -273,6 +281,7 @@ export async function applyPostgresSchema(sql) {
     'meta_video_assets',
     'runs',
     'node_results',
+    'publication_recovery',
     'conversation_templates',
     'audience_templates',
     'app_migrations',

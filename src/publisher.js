@@ -7,10 +7,26 @@ import {
   buildVideoCreativeParams
 } from './draft.js';
 import { isMetaThrottleError } from './meta-client.js';
+import { createMetaRequestCache } from './meta-request-cache.js';
 
 const PUBLIC_POST_DEADLINE_CLEANUP_MS = 10_000;
 const TRANSIENT_CREATIVE_RETRY_DELAYS_MS = [5_000, 12_000];
+const READY_VIDEO_TTL_MS = 30 * 60_000;
 const activeMetaVideoUploads = new Map();
+const activeMetaImageUploads = new Map();
+// A video Meta reported ready stays ready, so Workflow media prepare and later publish batches reuse the
+// answer (and its thumbnail) instead of polling again. Pending and failed videos are never stored here.
+// ponytail: memory of this process; after a restart each video costs one status check again.
+const readyMetaVideos = createMetaRequestCache();
+
+export function knownReadyVideo(ownerMetaUserId, accountId, videoId) {
+  return readyMetaVideos.peek(JSON.stringify([ownerMetaUserId, accountId, videoId]));
+}
+
+export function rememberReadyVideo(ownerMetaUserId, accountId, videoId, video) {
+  const thumbnail = { imageHash: video.thumbnail?.imageHash, imageUrl: video.thumbnail?.imageUrl };
+  return readyMetaVideos.load(JSON.stringify([ownerMetaUserId, accountId, videoId]), READY_VIDEO_TTL_MS, async () => thumbnail);
+}
 
 export async function publishDraft({
   draft,
@@ -49,6 +65,7 @@ export async function publishDraft({
   });
   const creativeArtifacts = seedCreativeArtifacts(draft, nodes);
   const metaVideoIds = new Map();
+  const metaImageHashes = new Map();
   const readyVideos = new Map();
   let newNodes = 0;
   let bounded = false;
@@ -146,6 +163,7 @@ export async function publishDraft({
           deadlineContext,
           creativeArtifacts,
           metaVideoIds,
+          metaImageHashes,
           readyVideos,
           getMetaVideoId,
           saveMetaVideoId,
@@ -235,6 +253,7 @@ async function createAd({
   deadlineContext,
   creativeArtifacts,
   metaVideoIds,
+  metaImageHashes,
   readyVideos,
   getMetaVideoId,
   saveMetaVideoId,
@@ -264,6 +283,7 @@ async function createAd({
       delay,
       deadlineContext,
       metaVideoIds,
+      metaImageHashes,
       readyVideos,
       getMetaVideoId,
       saveMetaVideoId,
@@ -293,13 +313,16 @@ async function createAd({
     assertPublicationDeadline(deadlineContext);
     if (artifact.permalinkUrl || typeof metaClient.getAdPublication !== 'function') return;
     // Chạy sau khi nhả slot tạo (xem publishDraft), nên không làm chậm ad kế tiếp.
+    // Ads sharing a creative share its Post, so one lookup (and its failure) serves every sibling;
+    // a Post that is not ready yet is left to the publication sync and its backoff.
     return (lookupGate) => lookupGate(async () => {
       try {
-        const publication = await metaClient.getAdPublication(
+        artifact.publicationLookup ??= metaClient.getAdPublication(
           token,
           remoteId,
           publicationOptions(deadlineContext)
         );
+        const publication = await artifact.publicationLookup;
         artifact.postId = publication?.postId ?? artifact.postId;
         artifact.permalinkUrl = publication?.permalinkUrl ?? artifact.permalinkUrl;
         if (artifact.postId || artifact.permalinkUrl) {
@@ -371,6 +394,7 @@ async function createCreativeArtifact({
   delay,
   deadlineContext,
   metaVideoIds,
+  metaImageHashes,
   readyVideos,
   getMetaVideoId,
   saveMetaVideoId,
@@ -393,6 +417,7 @@ async function createCreativeArtifact({
       delay,
       deadlineContext,
       metaVideoIds,
+      metaImageHashes,
       readyVideos,
       getMetaVideoId,
       saveMetaVideoId,
@@ -609,6 +634,7 @@ async function createCreativeForMedia({
   delay,
   deadlineContext,
   metaVideoIds,
+  metaImageHashes,
   readyVideos,
   getMetaVideoId,
   saveMetaVideoId,
@@ -617,12 +643,13 @@ async function createCreativeForMedia({
 }) {
   if (media.mimeType.startsWith('image/')) {
     assertPublicationDeadline(deadlineContext);
-    const imageHash = media.metaImageHash ?? await metaClient.uploadImage(
-      token,
+    const imageHash = media.metaImageHash ?? await sharedImageHash({
+      metaImageHashes,
+      ownerMetaUserId,
       accountId,
       media,
-      publicationOptions(deadlineContext)
-    );
+      upload: () => metaClient.uploadImage(token, accountId, media, publicationOptions(deadlineContext))
+    });
     assertPublicationDeadline(deadlineContext);
     const creativeId = await createCreativeWithRetry({
       metaClient,
@@ -671,7 +698,11 @@ async function createCreativeForMedia({
   assertPublicationDeadline(deadlineContext);
   let thumbnailPromise = readyVideos?.get(cacheKey);
   if (!thumbnailPromise) {
-    thumbnailPromise = waitForVideoReady(metaClient, token, videoId, delay, deadlineContext);
+    const readyThumbnail = knownReadyVideo(ownerMetaUserId, accountId, videoId);
+    thumbnailPromise = readyThumbnail
+      ? Promise.resolve(readyThumbnail)
+      : waitForVideoReady(metaClient, token, videoId, delay, deadlineContext)
+        .then((video) => rememberReadyVideo(ownerMetaUserId, accountId, videoId, video));
     readyVideos?.set(cacheKey, thumbnailPromise);
   }
   let thumbnail;
@@ -696,6 +727,31 @@ async function createCreativeForMedia({
   });
   assertPublicationDeadline(deadlineContext);
   return creativeId;
+}
+
+// Same pattern as the video upload above: one upload per owner/account/image at a time, reused by every
+// creative in this run. Creatives stay separate. A failed upload is forgotten so the next creative retries.
+function sharedImageHash({ metaImageHashes, ownerMetaUserId, accountId, media, upload }) {
+  if (!media.id) return upload();
+  const cacheKey = `${accountId}:${media.id}`;
+  let hashPromise = metaImageHashes.get(cacheKey);
+  if (!hashPromise) {
+    const uploadKey = `${ownerMetaUserId}:${cacheKey}`;
+    hashPromise = activeMetaImageUploads.get(uploadKey);
+    if (!hashPromise) {
+      hashPromise = upload();
+      activeMetaImageUploads.set(uploadKey, hashPromise);
+      void hashPromise.then(
+        () => activeMetaImageUploads.delete(uploadKey),
+        () => activeMetaImageUploads.delete(uploadKey)
+      );
+    }
+    metaImageHashes.set(cacheKey, hashPromise);
+    void hashPromise.catch(() => {
+      if (metaImageHashes.get(cacheKey) === hashPromise) metaImageHashes.delete(cacheKey);
+    });
+  }
+  return hashPromise;
 }
 
 async function createCreativeWithRetry({
@@ -749,12 +805,7 @@ async function waitForVideoReady(metaClient, token, videoId, delay, deadlineCont
     );
     assertPublicationDeadline(deadlineContext);
     const status = video.status?.video_status;
-    if (status === 'ready') {
-      return {
-        imageHash: video.thumbnail?.imageHash,
-        imageUrl: video.thumbnail?.imageUrl
-      };
-    }
+    if (status === 'ready') return video;
     if (status === 'error') {
       const error = new Error('Meta không xử lý được video');
       error.code = 'META_VIDEO_PROCESSING_FAILED';

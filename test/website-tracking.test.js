@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildAdParams, validateDraft } from '../src/draft.js';
 import { createMetaClient } from '../src/meta-client.js';
-import { testConfig } from './helpers.js';
+import { createServer } from '../src/server.js';
+import { encryptToken, signSession } from '../src/crypto.js';
+import { request, testConfig } from './helpers.js';
 import { createWorkspaceState, updateNodeField, duplicateAd, setAccountResources } from '../public/state.js';
 import { createDraftStorage } from '../public/draft-storage.js';
 import { renderWorkspace } from '../public/workspace.js';
@@ -41,12 +43,29 @@ test('new, duplicated and restored ads keep the fixed tracking configuration', (
   assert.match(html, /value="657921569053875" readonly/);
 });
 
-test('pixel discovery requests only ids and names from the selected ad account', async () => {
-  const client = createMetaClient(testConfig(), { fetchImpl: async (url) => {
-    const request = new URL(url);
-    assert.equal(request.pathname, '/v25.0/act_25/adspixels');
-    assert.equal(request.searchParams.get('fields'), 'id,name');
-    return Response.json({ data: [{ id: '123456', name: 'Website LG' }] });
-  } });
-  assert.deepEqual(await client.listPixels('test-token', 'act_25'), [{ id: '123456', name: 'Website LG' }]);
+test('account resources keep promotable Pages but never list Pixels, since ads use the fixed Pixel', async (context) => {
+  const config = testConfig();
+  const paths = [];
+  const server = createServer({
+    config,
+    db: {
+      createSession: () => ({ id: 'new-session' }),
+      getSession: () => ({ id: 'session-user', metaUserId: 'meta-user-1' }),
+      getConnection: () => ({ accessTokenCiphertext: encryptToken('EAAG-token', config.tokenEncryptionKey) })
+    },
+    metaClient: createMetaClient(config, { fetchImpl: async (url) => {
+      paths.push(new URL(url).pathname);
+      return Response.json({ data: [{ id: 'page-1', name: 'Page' }] });
+    } })
+  });
+  context.after(() => server.close());
+
+  const response = await request(server, '/api/ad-account-resources?adAccountId=act_25', {
+    headers: { cookie: `meta_ads_session=${encodeURIComponent(signSession('session-user', config.sessionSecret))}` }
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(paths.sort(), ['/v25.0/act_25/customaudiences', '/v25.0/act_25/promote_pages', '/v25.0/act_25/saved_audiences']);
+  assert.deepEqual(response.body.promotablePageIds, ['page-1']);
+  assert.equal('pixels' in response.body, false);
 });

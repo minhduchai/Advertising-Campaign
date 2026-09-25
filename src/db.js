@@ -118,6 +118,14 @@ export function createSqliteDatabase(path) {
       permalink_url TEXT,
       PRIMARY KEY (run_id, client_id)
     );
+    CREATE TABLE IF NOT EXISTS publication_recovery (
+      run_id TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_at INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      PRIMARY KEY (run_id, client_id)
+    );
     CREATE TABLE IF NOT EXISTS conversation_templates (
       id TEXT PRIMARY KEY,
       owner_meta_user_id TEXT NOT NULL,
@@ -1208,6 +1216,43 @@ export function createSqliteDatabase(path) {
       );
     },
 
+    listPublicationLookups(runId) {
+      return database.prepare(`
+        SELECT client_id, attempts, next_at FROM publication_recovery WHERE run_id = ?
+      `).all(runId).map(mapPublicationLookup);
+    },
+
+    // Leases due lookups; returns only the client IDs this caller now owns.
+    claimPublicationLookups(runId, clientIds, { now, leaseUntil }) {
+      const claim = database.prepare(`
+        INSERT INTO publication_recovery (run_id, client_id, attempts, next_at) VALUES (?, ?, 0, ?)
+        ON CONFLICT(run_id, client_id) DO UPDATE SET next_at = excluded.next_at
+        WHERE publication_recovery.next_at <= ?
+        RETURNING client_id
+      `);
+      return clientIds.filter((clientId) => claim.get(runId, clientId, leaseUntil, now));
+    },
+
+    schedulePublicationLookups(runId, clientIds, { attempts, nextAt, code }) {
+      const schedule = database.prepare(`
+        INSERT INTO publication_recovery (run_id, client_id, attempts, next_at, last_error) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(run_id, client_id) DO UPDATE SET
+          attempts = excluded.attempts, next_at = excluded.next_at, last_error = excluded.last_error
+      `);
+      for (const clientId of clientIds) schedule.run(runId, clientId, attempts, nextAt, code ?? null);
+    },
+
+    // Metadata only, guarded by the Ad's identity, so a concurrent publisher's status, creative and error survive.
+    savePublication(runId, nodes, { postId, permalinkUrl }) {
+      const save = database.prepare(`
+        UPDATE node_results SET
+          post_id = COALESCE(NULLIF(post_id, ''), ?),
+          permalink_url = COALESCE(NULLIF(permalink_url, ''), ?)
+        WHERE run_id = ? AND client_id = ? AND remote_id = ? AND status = 'created'
+      `);
+      for (const node of nodes) save.run(postId ?? null, permalinkUrl ?? null, runId, node.clientId, node.remoteId);
+    },
+
     getRun(runId) {
       const run = database.prepare(`
         SELECT id, owner_meta_user_id, status, ad_account_id, snapshot_json, execution_json,
@@ -1649,6 +1694,10 @@ function seedingPostConflictError(runId, postId) {
   const error = new Error(`Post ${postId} already has a different Campaign selection in run ${runId}`);
   error.code = 'SEEDING_POST_CONFLICT';
   return error;
+}
+
+function mapPublicationLookup(row) {
+  return { clientId: row.client_id, attempts: Number(row.attempts), nextAt: Number(row.next_at) };
 }
 
 function mapNodeResult(row) {

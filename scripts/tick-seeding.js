@@ -4,7 +4,6 @@ import { createSqlTransport } from '../src/postgres-transport.js';
 import { decryptToken } from '../src/crypto.js';
 import { createMetaClient } from '../src/meta-client.js';
 import { createR2MediaStore } from '../src/r2-media.js';
-import { syncRunPublications } from '../src/publication-sync.js';
 import { prepareRunSeeding, processNextSeedingJob } from '../src/seeding-service.js';
 
 const MAX_RUNTIME_MS = 100_000;
@@ -37,15 +36,13 @@ try {
     ORDER BY created_at DESC LIMIT 20`;
   for (const candidate of candidates) {
     if (processed >= MAX_JOBS_PER_TICK || Date.now() - startedAt >= MAX_RUNTIME_MS) break;
-    let run = await db.getRun(candidate.id);
+    const run = await db.getRun(candidate.id);
     if (!run?.snapshot?.campaigns?.some(campaign => campaign.seeding?.enabled)) continue;
     const connection = await db.getConnection(run.ownerMetaUserId);
     if (!connection) continue;
     const token = decryptToken(connection.accessTokenCiphertext, config.tokenEncryptionKey);
     try {
-      await syncRunPublications({ run, token, metaClient,
-        updateNodeResult: (runId, node) => db.updateNodeResult(runId, node) });
-      run = await db.getRun(run.id);
+      // tick-publication-recovery owns missing Post ID lookups and their backoff.
       const existingJobs = await db.listSeedingJobs(run.ownerMetaUserId, run.id);
       const plan = await prepareRunSeeding({ run, ownerMetaUserId: run.ownerMetaUserId,
         existingJobs, insertJobs: (owner, jobs) => db.insertSeedingJobs(owner, jobs) });

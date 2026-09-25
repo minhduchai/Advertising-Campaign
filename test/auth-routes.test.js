@@ -191,9 +191,7 @@ test('returns account-scoped audiences without scanning Business Pages', async (
     customAudiences: [{ id: 'ca-1', name: 'Đã nhắn tin', subtype: 'ENGAGEMENT' }],
     savedAudiences: [{ id: 'saved-1', name: 'Nữ 22-45', compatible: true, issues: [], content: {} }],
     promotablePageIds: [],
-    pageEligibilityKnown: false,
-    pixels: [],
-    pixelsLoaded: false
+    pageEligibilityKnown: false
   });
   assert.deepEqual(calls.map(({ type, accountId }) => ({ type, accountId })), [
     { type: 'audiences', accountId: 'act_1' },

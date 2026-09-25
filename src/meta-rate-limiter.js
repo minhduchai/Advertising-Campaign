@@ -1,9 +1,14 @@
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
 const MAX_CONCURRENCY = 3;
 // Chưa có header usage (mới khởi động, nghỉ >10 phút, hoặc endpoint không trả header) thì chạy 2 luồng thay vì tuần tự.
 const UNKNOWN_USAGE_CONCURRENCY = 2;
 const HEADER_MAX_AGE_MS = 10 * 60_000;
 
-export function createMetaRateLimiter({ now = Date.now } = {}) {
+// `cooldowns` (createSharedCooldowns) shares pauses with the other processes on this host.
+export function createMetaRateLimiter({ now = Date.now, cooldowns = null } = {}) {
   let usage = null;
   let usageAt = 0;
   let concurrency = MAX_CONCURRENCY;
@@ -13,10 +18,12 @@ export function createMetaRateLimiter({ now = Date.now } = {}) {
   let active = 0;
 
   return {
-    async acquire(signal) {
+    async acquire(signal, url) {
+      const scopes = requestScopes(url);
       while (true) {
         if (signal?.aborted) throw signal.reason ?? new DOMException('The operation was aborted', 'AbortError');
-        const waitMs = Math.max(0, nextStartAt - now(), forcedPauseUntil - now());
+        const sharedUntil = cooldowns ? await cooldowns.until(scopes) : 0;
+        const waitMs = Math.max(0, nextStartAt - now(), forcedPauseUntil - now(), sharedUntil - now());
         if (waitMs > 60_000) throw throttleError(waitMs);
         if (active < effectiveConcurrency() && waitMs === 0) {
           active += 1;
@@ -30,7 +37,7 @@ export function createMetaRateLimiter({ now = Date.now } = {}) {
       }
     },
 
-    observe(response) {
+    async observe(response, url) {
       const nextUsage = parseUsageHeaders(response?.headers);
       if (nextUsage !== null) {
         const previous = usage;
@@ -50,13 +57,20 @@ export function createMetaRateLimiter({ now = Date.now } = {}) {
         if (nextPolicy.delayMs > 0) nextStartAt = Math.max(nextStartAt, now() + nextPolicy.delayMs);
         if (nextPolicy.pauseMs > 0) forcedPauseUntil = Math.max(forcedPauseUntil, now() + nextPolicy.pauseMs);
       }
+      if (!cooldowns) return;
+      for (const [scope, value] of scopedUsage(response?.headers, accountScope(url))) {
+        const { pauseMs } = policyForUsage(value, now());
+        if (pauseMs > 0) await cooldowns.extend(scope, now() + pauseMs);
+      }
     },
 
-    recordThrottle(retryAfterMs) {
+    async recordThrottle(retryAfterMs, { url, code, headers } = {}) {
       const waitMs = Math.max(0, Number(retryAfterMs) || 0);
       concurrency = 1;
       recoverBelow = Math.max((usage ?? 100) - 10, 0);
       forcedPauseUntil = Math.max(forcedPauseUntil, now() + waitMs);
+      if (!cooldowns) return;
+      for (const scope of throttleScopes(url, code, headers)) await cooldowns.extend(scope, now() + waitMs);
     },
 
     status() {
@@ -111,6 +125,89 @@ function throttleError(retryAfterMs) {
   error.retryable = true;
   error.retryAfterMs = retryAfterMs;
   return error;
+}
+
+// ponytail: files beside the shared read cache coordinate the web server and cron workers on one host;
+// move this to a shared store if workers ever run on several hosts.
+export function createSharedCooldowns(directory) {
+  if (!directory) return null;
+  const file = (scope) => join(directory, `cooldown-${scope.replace(':', '-')}.json`);
+  async function read(scope) {
+    try {
+      return Number(JSON.parse(await readFile(file(scope), 'utf8')).until) || 0;
+    } catch {
+      return 0;
+    }
+  }
+  return {
+    async until(scopes) {
+      return Math.max(0, ...await Promise.all(scopes.map(read)));
+    },
+    // Only ever lengthens a cooldown, so a later low-usage response cannot clear one that is still active.
+    // ponytail: two processes extending the same scope at once keep the last write; both values are in the future.
+    async extend(scope, until) {
+      if (until <= await read(scope)) return;
+      const temporary = `${file(scope)}.${randomUUID()}.tmp`;
+      try {
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        await writeFile(temporary, JSON.stringify({ until }), { mode: 0o600 });
+        await rename(temporary, file(scope));
+      } catch {
+        // Best effort: this process still enforces its own pause when the shared file cannot be written.
+        await unlink(temporary).catch(() => {});
+      }
+    }
+  };
+}
+
+function accountScope(url) {
+  let pathname = '';
+  try {
+    pathname = new URL(String(url)).pathname;
+  } catch {}
+  const accountId = /\/act_(\d+)(?:\/|$)/.exec(pathname)?.[1];
+  return accountId ? `account:${accountId}` : null;
+}
+
+function requestScopes(url) {
+  const account = accountScope(url);
+  return account ? ['app', account] : ['app'];
+}
+
+// x-app-usage measures the whole app, x-ad-account-usage the requested ad account, and
+// x-business-use-case-usage the business objects it names.
+function scopedUsage(headers, account) {
+  const usageByScope = new Map();
+  const add = (scope, value) => {
+    if (scope && value !== null) usageByScope.set(scope, Math.max(usageByScope.get(scope) ?? 0, value));
+  };
+  add('app', parseUsageValue(headers?.get?.('x-app-usage')));
+  add(account, parseUsageValue(headers?.get?.('x-ad-account-usage')));
+  for (const [id, entries] of businessUseCaseUsage(headers)) {
+    const numbers = usageNumbers(entries);
+    add(`account:${id}`, numbers.length ? Math.max(...numbers) : null);
+  }
+  return usageByScope;
+}
+
+// Code 4 is the app-wide limit. Other limits are shared only when a header or the URL names the ad
+// account; anything else stays a pause for this process alone.
+function throttleScopes(url, code, headers) {
+  if (Number(code) === 4) return ['app'];
+  const scopes = new Set([accountScope(url)]);
+  for (const [id, entries] of businessUseCaseUsage(headers)) {
+    if ([entries].flat().some((entry) => Number(entry?.estimated_time_to_regain_access) > 0)) scopes.add(`account:${id}`);
+  }
+  scopes.delete(null);
+  return [...scopes];
+}
+
+function businessUseCaseUsage(headers) {
+  try {
+    return Object.entries(JSON.parse(headers?.get?.('x-business-use-case-usage'))).filter(([id]) => /^\d+$/.test(id));
+  } catch {
+    return [];
+  }
 }
 
 export function parseUsageHeaders(headers) {

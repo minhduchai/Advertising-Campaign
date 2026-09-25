@@ -1,4 +1,5 @@
 import { isMetaThrottleError } from './meta-client.js';
+import { knownReadyVideo, rememberReadyVideo } from './publisher.js';
 
 const DEFAULT_RETRY_AFTER_MS = 15_000;
 
@@ -30,6 +31,9 @@ export async function prepareWorkflowMedia({
   let ready = 0;
   let failed = 0;
   for (const group of groups) {
+    // Every Ad using this video already finished (created, or failed with it): nothing left to prepare,
+    // and a failed video must not be uploaded again just because another video is still processing.
+    if (group.ads.every(({ ad }) => terminalClientIds.has(String(ad.clientId)))) continue;
     let media;
     try {
       media = await getMedia(group.mediaId);
@@ -46,8 +50,14 @@ export async function prepareWorkflowMedia({
         videoId = String(await metaClient.uploadVideo(token, group.accountId, media));
         await saveMetaVideoId(ownerMetaUserId, group.mediaId, group.accountId, videoId);
       }
-      const status = (await metaClient.getVideoStatus(token, videoId)).status?.video_status;
+      if (knownReadyVideo(ownerMetaUserId, group.accountId, videoId)) {
+        ready += 1;
+        continue;
+      }
+      const video = await metaClient.getVideoStatus(token, videoId);
+      const status = video.status?.video_status;
       if (status === 'ready') {
+        await rememberReadyVideo(ownerMetaUserId, group.accountId, videoId, video);
         ready += 1;
       } else if (status === 'error') {
         await deleteMetaVideoId(ownerMetaUserId, group.mediaId, group.accountId, videoId);

@@ -1,6 +1,7 @@
 import { catalogCounts, mergePageCatalog } from './page-catalog.js';
-import { createMetaRateLimiter } from './meta-rate-limiter.js';
+import { createMetaRateLimiter, createSharedCooldowns } from './meta-rate-limiter.js';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { createMetaReadCache } from './meta-read-cache.js';
 
 const targetingSearchMap = {
   interest: { type: 'adinterest', targetingField: 'interests' },
@@ -30,18 +31,22 @@ const oauthScopes = [
 
 export function createMetaClient(config, { fetchImpl = fetch } = {}) {
   const rawFetch = fetchImpl;
-  const rateLimiter = createMetaRateLimiter();
+  const rateLimiter = createMetaRateLimiter({ cooldowns: createSharedCooldowns(config.metaReadCacheDirectory) });
   fetchImpl = async (input, options = {}) => {
-    const release = await rateLimiter.acquire(options.signal);
+    const release = await rateLimiter.acquire(options.signal, input);
     try {
       const response = await rawFetch(input, options);
-      rateLimiter.observe(response);
+      await rateLimiter.observe(response, input);
       return response;
     } finally {
       release();
     }
   };
   fetchImpl.rateLimiter = rateLimiter;
+  fetchImpl.readCache = createMetaReadCache({
+    directory: config.metaReadCacheDirectory,
+    encryptionKey: config.tokenEncryptionKey
+  });
   const graphBaseUrl = `https://graph.facebook.com/${config.apiVersion}`;
   const graphVideoBaseUrl = `https://graph-video.facebook.com/${config.apiVersion}`;
 
@@ -182,13 +187,6 @@ export function createMetaClient(config, { fetchImpl = fetch } = {}) {
             tasks: page.tasks ?? []
           }]))
       };
-    },
-
-    async listPixels(token, accountId) {
-      const data = await requestPaged(fetchImpl, `${graphBaseUrl}/${accountId}/adspixels`, {
-        fields: 'id,name', limit: '100'
-      }, token);
-      return data.map((pixel) => ({ id: String(pixel.id), name: pixel.name ?? String(pixel.id) }));
     },
 
     async listCustomAudiences(token, accountId) {
@@ -347,11 +345,12 @@ export function createMetaClient(config, { fetchImpl = fetch } = {}) {
     },
 
     async deletePagePost(pageToken, postId, options = {}) {
-      const payload = await sendWithThrottleRetry(() => fetchImpl(`${graphBaseUrl}/${postId}`, {
+      const url = `${graphBaseUrl}/${postId}`;
+      const payload = await sendWithThrottleRetry(() => fetchImpl(url, {
         method: 'DELETE',
         headers: { authorization: `Bearer ${pageToken}` },
         signal: options.signal
-      }), options.signal, rateLimiter);
+      }), options.signal, rateLimiter, url);
       if (payload.success !== true) {
         throw new Error('Meta không xác nhận đã xóa bài viết công khai');
       }
@@ -604,6 +603,15 @@ function isMissingBusinessPermission(error) {
 }
 
 async function requestPaged(fetchImpl, initialUrl, params, token) {
+  // Cache only resource discovery, never mutations, video polling or ad results.
+  if (/\/(?:me\/(?:permissions|accounts|businesses)|[^/]+\/(?:owned_pages|client_pages))$/.test(new URL(initialUrl).pathname)) {
+    return fetchImpl.readCache.load(JSON.stringify([initialUrl, params, token]), 5 * 60_000,
+      () => requestPagedUncached(fetchImpl, initialUrl, params, token, AbortSignal.timeout(60_000)));
+  }
+  return requestPagedUncached(fetchImpl, initialUrl, params, token);
+}
+
+async function requestPagedUncached(fetchImpl, initialUrl, params, token, signal) {
   const firstUrl = new URL(initialUrl);
   for (const [key, value] of Object.entries(params)) {
     firstUrl.searchParams.set(key, value);
@@ -613,9 +621,10 @@ async function requestPaged(fetchImpl, initialUrl, params, token) {
   let nextUrl = firstUrl.toString();
   while (nextUrl) {
     const response = await sendWithThrottleRetry(
-      () => fetchImpl(nextUrl, { headers: { authorization: `Bearer ${token}` } }),
-      undefined,
-      fetchImpl.rateLimiter
+      () => fetchImpl(nextUrl, { headers: { authorization: `Bearer ${token}` }, signal }),
+      signal,
+      fetchImpl.rateLimiter,
+      nextUrl
     );
     const payload = response;
 
@@ -635,7 +644,7 @@ async function requestJson(fetchImpl, url, params, token, { signal } = {}) {
   return sendWithThrottleRetry(() => fetchImpl(target, {
     headers: token ? { authorization: `Bearer ${token}` } : undefined,
     signal
-  }), signal, fetchImpl.rateLimiter);
+  }), signal, fetchImpl.rateLimiter, target);
 }
 
 async function postParams(fetchImpl, url, token, params, { signal } = {}) {
@@ -647,7 +656,7 @@ async function postParams(fetchImpl, url, token, params, { signal } = {}) {
     },
     body: params.toString(),
     signal
-  }), signal, fetchImpl.rateLimiter);
+  }), signal, fetchImpl.rateLimiter, url);
 }
 
 async function uploadMedia(fetchImpl, url, token, media, fields = {}, { signal } = {}) {
@@ -661,7 +670,7 @@ async function uploadMedia(fetchImpl, url, token, media, fields = {}, { signal }
     headers: { authorization: `Bearer ${token}` },
     body: formData,
     signal
-  }), signal, fetchImpl.rateLimiter);
+  }), signal, fetchImpl.rateLimiter, url);
 }
 
 async function readPayload(response) {
@@ -675,6 +684,9 @@ async function readPayload(response) {
 // Meta rate limit: HTTP 429, hoặc code 4/17/32/613 (app/user/page), 80000-80014 (business use case).
 const THROTTLE_RETRY_DELAYS_MS = [30_000, 60_000, 120_000, 300_000];
 const MAX_INLINE_THROTTLE_WAIT_MS = 30_000;
+// A throttle response means Meta did not run the request, so one short retry is safe even for
+// writes; after that the caller defers with retryAfterMs instead of adding more quota pressure.
+const MAX_INLINE_THROTTLE_RETRIES = 1;
 
 export function isThrottleResponse(status, payload) {
   const code = Number(payload?.error?.code);
@@ -696,18 +708,20 @@ export function throttleWaitMs(response, attempt) {
   return THROTTLE_RETRY_DELAYS_MS[attempt];
 }
 
-async function sendWithThrottleRetry(send, signal, rateLimiter) {
+async function sendWithThrottleRetry(send, signal, rateLimiter, url) {
   for (let attempt = 0; ; attempt += 1) {
     const response = await send();
     const payload = await readPayload(response);
     if (response.ok) return payload;
     const waitMs = isThrottleResponse(response.status, payload) ? throttleWaitMs(response, attempt) : undefined;
     if (!(waitMs > 0)) throwMetaError(payload, response.status);
-    rateLimiter?.recordThrottle(waitMs);
+    await rateLimiter?.recordThrottle(waitMs, { url, code: payload?.error?.code, headers: response.headers });
     // App-wide limit responses are already quota pressure; retrying the same
     // request here only amplifies the burst before the durable workflow queue.
     if (Number(payload?.error?.code) === 4) throwMetaThrottle(payload, response.status, waitMs);
-    if (waitMs > MAX_INLINE_THROTTLE_WAIT_MS) throwMetaThrottle(payload, response.status, waitMs);
+    if (waitMs > MAX_INLINE_THROTTLE_WAIT_MS || attempt >= MAX_INLINE_THROTTLE_RETRIES) {
+      throwMetaThrottle(payload, response.status, waitMs);
+    }
     await sleep(waitMs, undefined, { signal });
   }
 }

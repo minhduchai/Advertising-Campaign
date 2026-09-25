@@ -61,7 +61,6 @@ publicFiles.add('/data-deletion.html');
 publicFiles.add('/vendor/leaflet/leaflet.js');
 publicFiles.add('/vendor/leaflet/leaflet.css');
 const maxLocalMediaRequestBytes = MAX_MEDIA_BYTES + 1024 * 1024;
-export const PUBLISH_DEADLINE_MS = 240_000;
 // Cloudflare Workflow cắt fetch sang application server ở ~100s (524), nên mỗi bước phải trả về trước đó:
 // không bắt đầu node mới sau SOFT, hủy hẳn ở HARD.
 export const WORKFLOW_STEP_SOFT_DEADLINE_MS = 45_000;
@@ -73,12 +72,6 @@ const ADDRESS_SEARCH_TTL_MS = 24 * 60 * 60_000;
 const WORKFLOW_LEASE_TTL_MS = 10 * 60_000;
 const TELEGRAM_UPLOAD_JOB_TTL_MS = 6 * 60 * 60_000;
 const TELEGRAM_UPLOAD_JOB_LEASE_MS = 2 * 60 * 60_000;
-
-export function clampPublishDeadlineMs(value) {
-  const milliseconds = Number(value);
-  if (!Number.isFinite(milliseconds)) return PUBLISH_DEADLINE_MS;
-  return Math.min(PUBLISH_DEADLINE_MS, Math.max(0, milliseconds));
-}
 
 export function isLocalMediaRequestTooLarge(contentLength) {
   return Number.isFinite(contentLength) && contentLength > maxLocalMediaRequestBytes;
@@ -500,7 +493,7 @@ export function createRequestHandler({ config, metaClient, db, mediaStore, addre
           return;
         }
         if (request.method === 'POST') {
-          await handleRunCreation({ request, response, session, db, config, metaClient, mediaStore, workflowDispatcher });
+          await handleRunCreation({ request, response, session, db, config, metaClient, mediaStore, workflowDispatcher, metaRequestCache });
           return;
         }
       }
@@ -678,31 +671,24 @@ async function handleAdAccountResources({ url, response, session, db, config, me
   }
 
   const token = decryptToken(connection.accessTokenCiphertext, config.tokenEncryptionKey);
-  const { customAudiences, savedAudiences, promotablePages, pageEligibilityKnown, pixels, pixelsLoaded } = await metaRequestCache.load(
+  const { customAudiences, savedAudiences, promotablePages, pageEligibilityKnown } = await metaRequestCache.load(
     `user:${session.metaUserId}:account:${adAccountId}`,
     META_ACCOUNT_RESOURCE_TTL_MS,
     async () => {
-      const [customAudiences, savedAudiences, promotablePageResult, pixelResult] = await Promise.all([
+      const [customAudiences, savedAudiences, promotablePageResult] = await Promise.all([
         metaClient.listCustomAudiences(token, adAccountId),
         metaClient.listSavedAudiences(token, adAccountId),
         typeof metaClient.listPromotablePages === 'function'
           ? metaClient.listPromotablePages(token, adAccountId)
             .then((pages) => ({ pages, known: true }))
             .catch(() => ({ pages: [], known: false }))
-          : Promise.resolve({ pages: [], known: false }),
-        typeof metaClient.listPixels === 'function'
-          ? metaClient.listPixels(token, adAccountId)
-            .then((items) => ({ items, loaded: true }))
-            .catch(() => ({ items: [], loaded: false }))
-          : Promise.resolve({ items: [], loaded: false })
+          : Promise.resolve({ pages: [], known: false })
       ]);
       return {
         customAudiences,
         savedAudiences,
         promotablePages: promotablePageResult.pages,
-        pageEligibilityKnown: promotablePageResult.known,
-        pixels: pixelResult.items,
-        pixelsLoaded: pixelResult.loaded
+        pageEligibilityKnown: promotablePageResult.known
       };
     }
   );
@@ -710,9 +696,7 @@ async function handleAdAccountResources({ url, response, session, db, config, me
     customAudiences,
     savedAudiences,
     promotablePageIds: promotablePages.map((page) => String(page.id)),
-    pageEligibilityKnown,
-    pixels,
-    pixelsLoaded
+    pageEligibilityKnown
   });
 }
 
@@ -1726,12 +1710,7 @@ async function retryRunAdLocally({ runId, ownerMetaUserId, token, workflowToken,
     : 'completed';
   await db.updateRunStatus(runId, status);
   let updatedRun = await db.getRun(runId);
-  await syncRunPublications({
-    run: updatedRun,
-    token,
-    metaClient,
-    updateNodeResult: (targetRunId, node) => db.updateNodeResult(targetRunId, node)
-  });
+  await syncRunPublications({ run: updatedRun, token, metaClient, db });
   updatedRun = await db.getRun(runId);
   const existingJobs = await db.listSeedingJobs(ownerMetaUserId, runId);
   await prepareRunSeeding({
@@ -1831,12 +1810,8 @@ async function handleRunSeedingRoute({
     const connection = await getConnectedMetaConnection({ response, session, db });
     if (!connection) return;
     const token = decryptToken(connection.accessTokenCiphertext, config.tokenEncryptionKey);
-    await syncRunPublications({
-      run,
-      token,
-      metaClient,
-      updateNodeResult: (targetRunId, node) => db.updateNodeResult(targetRunId, node)
-    });
+    // The browser polls prepare every few seconds; the shared lookup schedule decides when Meta is asked again.
+    await syncRunPublications({ run, token, metaClient, db });
     const updatedRun = await db.getRun(runId, { execution: false });
     if (!updatedRun || updatedRun.ownerMetaUserId !== session.metaUserId) {
       sendRunNotFound(response);
@@ -2019,12 +1994,7 @@ async function handleRunPublicationRefresh({ response, session, db, config, meta
     return;
   }
   const token = decryptToken(connection.accessTokenCiphertext, config.tokenEncryptionKey);
-  const sync = await syncRunPublications({
-    run,
-    token,
-    metaClient,
-    updateNodeResult: (targetRunId, node) => db.updateNodeResult(targetRunId, node)
-  });
+  const sync = await syncRunPublications({ run, token, metaClient, db });
   const updatedRun = await db.getRun(runId, { execution: false });
   if (!updatedRun || updatedRun.ownerMetaUserId !== session.metaUserId) {
     sendRunNotFound(response);
@@ -2259,13 +2229,7 @@ async function handleInternalWorkflowRoute({ request, response, url, config, db,
   }
 
   if (action === 'publications/next') {
-    const sync = await syncRunPublications({
-      run,
-      token,
-      metaClient,
-      maxGroups: WORKFLOW_PUBLICATION_BATCH_SIZE,
-      updateNodeResult: (targetRunId, node) => db.updateNodeResult(targetRunId, node)
-    });
+    const sync = await syncRunPublications({ run, token, metaClient, db, maxGroups: WORKFLOW_PUBLICATION_BATCH_SIZE });
     return sendJson(response, 200, { status: 'publications_checked', sync });
   }
 
@@ -2350,10 +2314,7 @@ export function collectWorkflowCleanupMediaIds(finalRun) {
   return [...mediaIds];
 }
 
-async function handleRunCreation({ request, response, session, db, config, metaClient, mediaStore, workflowDispatcher }) {
-  const publishDeadlineMs = clampPublishDeadlineMs(config.publishDeadlineMs);
-  const publishDeadlineAt = Date.now() + publishDeadlineMs;
-
+async function handleRunCreation({ request, response, session, db, config, metaClient, mediaStore, workflowDispatcher, metaRequestCache }) {
   if (!session.metaUserId) {
     sendJson(response, 401, { error: 'Connect Meta first' });
     return;
@@ -2519,15 +2480,17 @@ async function handleRunCreation({ request, response, session, db, config, metaC
   }
 
   const token = decryptToken(connection.accessTokenCiphertext, config.tokenEncryptionKey);
-  const selectedPageIds = [...new Set(draft.campaigns.map((campaign) => campaign.pageId))];
-  const publishingContext = await metaClient.getPagePublishingContext(token, selectedPageIds);
-  const pagePublishingContexts = publishingContext.pages;
+  // Only Public Test posts to the Page, so only it needs the Page token and pages_manage_posts.
+  let pagePublishingContexts = new Map();
   if (publicTestAds.length > 0) {
+    const selectedPageIds = [...new Set(draft.campaigns.map((campaign) => campaign.pageId))];
+    const publishingContext = await metaClient.getPagePublishingContext(token, selectedPageIds);
     const publishingIssues = publicTestPublishingIssues(publicTestAds, publishingContext);
     if (publishingIssues.length > 0) {
       sendJson(response, 403, { errors: publishingIssues });
       return;
     }
+    pagePublishingContexts = publishingContext.pages;
   }
 
   const streaming = acceptsRunStream(request);
@@ -2535,7 +2498,11 @@ async function handleRunCreation({ request, response, session, db, config, metaC
     draft,
     selectedMedia,
     selectedSeedingMedia,
-    pages: [...pagePublishingContexts.entries()].map(([id, page]) => ({ id, name: page.name }))
+    // Page names come from the catalog the workspace already loaded; without it the snapshot keeps the Page ID.
+    pages: [
+      ...(metaRequestCache.peek(`user:${session.metaUserId}:resources`)?.pageCatalog?.pages ?? []),
+      ...[...pagePublishingContexts.entries()].map(([id, page]) => ({ id, name: page.name }))
+    ]
   });
   const run = await db.createRun({
     ownerMetaUserId: session.metaUserId,
@@ -2574,19 +2541,6 @@ async function handleRunCreation({ request, response, session, db, config, metaC
     });
   }
 
-  const publicationController = new AbortController();
-  const publicationRemainingMs = Math.max(0, publishDeadlineAt - Date.now());
-  let publicationTimer;
-  if (publicationRemainingMs === 0) {
-    publicationController.abort();
-  } else {
-    publicationTimer = setTimeout(
-      () => publicationController.abort(),
-      publicationRemainingMs
-    );
-    publicationTimer.unref?.();
-  }
-
   const completedMediaIds = new Set();
   try {
     let nodePersistenceError;
@@ -2596,8 +2550,6 @@ async function handleRunCreation({ request, response, session, db, config, metaC
       runId: run.id,
       ownerMetaUserId: session.metaUserId,
       metaClient,
-      deadlineAt: publishDeadlineAt,
-      signal: publicationController.signal,
       concurrency: config.publishConcurrency,
       pagePublishingContexts,
       getMedia: async (ownerMetaUserId, mediaId) => (
@@ -2660,7 +2612,6 @@ async function handleRunCreation({ request, response, session, db, config, metaC
     }
     throw error;
   } finally {
-    if (publicationTimer) clearTimeout(publicationTimer);
     if (mediaStore.deleteTemporaryMedia) {
       await Promise.allSettled([...selectedMedia.values()]
         .filter((media) => completedMediaIds.has(media.id))

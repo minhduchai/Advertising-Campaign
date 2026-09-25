@@ -36,6 +36,12 @@ export function createMetaRequestCache({ now = Date.now, maxEntries = DEFAULT_MA
     return request;
   }
 
+  // Reads a fresh cached value without ever calling Meta.
+  function peek(key) {
+    const cached = entries.get(key);
+    return cached && cached.expiresAt > now() ? cached.value : undefined;
+  }
+
   function invalidatePrefix(prefix) {
     for (const key of entries.keys()) {
       if (key.startsWith(prefix)) entries.delete(key);
@@ -45,5 +51,5 @@ export function createMetaRequestCache({ now = Date.now, maxEntries = DEFAULT_MA
     }
   }
 
-  return { load, invalidatePrefix };
+  return { load, peek, invalidatePrefix };
 }
