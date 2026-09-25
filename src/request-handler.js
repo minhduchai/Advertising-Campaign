@@ -10,7 +10,7 @@ import { validateConversation } from './conversation.js';
 import { normalizeMetaConversationVariables } from '../public/conversation.js';
 import { publishDraft } from './publisher.js';
 import { MAX_MEDIA_BYTES } from './media-store.js';
-import { acceptsRunStream, startRunStream, writeRunEvent } from './run-stream.js';
+import { acceptsRunStream, startRunStream, writeRunEvent, waitWithRunHeartbeat } from './run-stream.js';
 import { createRunExecutionDraft, createRunSnapshot } from './run-report.js';
 import { syncRunPublications } from './publication-sync.js';
 import { tickCommentUnhide } from './comment-unhide-scheduler.js';
@@ -2552,6 +2552,8 @@ async function handleRunCreation({ request, response, session, db, config, metaC
       metaClient,
       concurrency: config.publishConcurrency,
       pagePublishingContexts,
+      waitForThrottle: true,
+      ...(streaming ? { delay: (ms) => waitWithRunHeartbeat(response, ms) } : {}),
       getMedia: async (ownerMetaUserId, mediaId) => (
         ownerMetaUserId === session.metaUserId ? selectedMedia.get(mediaId) ?? null : null
       ),

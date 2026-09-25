@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createMetaRateLimiter, parseUsageHeaders, policyForUsage } from '../src/meta-rate-limiter.js';
+import { createMetaRateLimiter, createSharedCooldowns, parseUsageHeaders, policyForUsage } from '../src/meta-rate-limiter.js';
 import { createMetaClient } from '../src/meta-client.js';
 import { testConfig } from './helpers.js';
 
@@ -24,6 +24,33 @@ async function sharedClients(t, count) {
 }
 
 const campaign = () => new URLSearchParams({ name: 'C' });
+
+test('concurrent cooldown extensions retain the longest pause across store instances', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'meta-cooldown-race-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const base = Date.now();
+  for (let i = 0; i < 5; i += 1) {
+    const scope = `account:${i}`;
+    await Promise.all(Array.from({ length: 20 }, (_, index) =>
+      createSharedCooldowns(directory).extend(scope, base + 120000 - index * 4000)));
+    assert.equal(await createSharedCooldowns(directory).until([scope]), base + 120000);
+  }
+});
+
+test('cooldown markers stay apart from the read cache and expired ones are removed', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'meta-cooldown-expiry-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const cooldowns = createSharedCooldowns(directory);
+
+  await cooldowns.extend('account:12', Date.now() + 60_000);
+  assert.deepEqual(await readdir(directory), ['cooldowns']);
+  const expired = `account-1-${Date.now() - 1_000}.json`;
+  await writeFile(join(directory, 'cooldowns', expired), '');
+
+  assert.equal(await cooldowns.until(['account:1']), 0, 'an expired pause and account 12 do not hold account 1');
+  assert.ok(await cooldowns.until(['account:12']) > Date.now());
+  assert.equal((await readdir(join(directory, 'cooldowns'))).includes(expired), false);
+});
 
 test('processes sharing the cache directory respect account and app cooldowns from each other', async (t) => {
   const { clients: [web, cron, unhide], sent, replies } = await sharedClients(t, 3);

@@ -1,5 +1,4 @@
-import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const MAX_CONCURRENCY = 3;
@@ -131,30 +130,33 @@ function throttleError(retryAfterMs) {
 // move this to a shared store if workers ever run on several hosts.
 export function createSharedCooldowns(directory) {
   if (!directory) return null;
-  const file = (scope) => join(directory, `cooldown-${scope.replace(':', '-')}.json`);
-  async function read(scope) {
-    try {
-      return Number(JSON.parse(await readFile(file(scope), 'utf8')).until) || 0;
-    } catch {
-      return 0;
-    }
-  }
+  // Each pause is its own immutable file named by scope and expiry, so concurrent writers keep the longest
+  // pause (never last-writer-wins) and a later low-usage response cannot clear one that is still active.
+  // A subdirectory keeps these few files apart from the read cache entries, so a check is one small readdir.
+  const markers = join(directory, 'cooldowns');
+  const marker = (scope, expiry) => `${scope.replace(':', '-')}-${expiry}.json`;
   return {
     async until(scopes) {
-      return Math.max(0, ...await Promise.all(scopes.map(read)));
-    },
-    // Only ever lengthens a cooldown, so a later low-usage response cannot clear one that is still active.
-    // ponytail: two processes extending the same scope at once keep the last write; both values are in the future.
-    async extend(scope, until) {
-      if (until <= await read(scope)) return;
-      const temporary = `${file(scope)}.${randomUUID()}.tmp`;
+      let names = [];
       try {
-        await mkdir(directory, { recursive: true, mode: 0o700 });
-        await writeFile(temporary, JSON.stringify({ until }), { mode: 0o600 });
-        await rename(temporary, file(scope));
+        names = await readdir(markers);
+      } catch {}
+      let until = 0;
+      for (const name of names) {
+        const expiry = Number(/-(\d+)\.json$/.exec(name)?.[1]);
+        if (!(expiry > 0)) continue;
+        if (expiry <= Date.now()) await unlink(join(markers, name)).catch(() => {});
+        else if (scopes.some((scope) => name === marker(scope, expiry))) until = Math.max(until, expiry);
+      }
+      return until;
+    },
+    async extend(scope, until) {
+      if (!Number.isFinite(until) || until <= Date.now()) return;
+      try {
+        await mkdir(markers, { recursive: true, mode: 0o700 });
+        await writeFile(join(markers, marker(scope, Math.ceil(until))), '', { mode: 0o600, flag: 'wx' });
       } catch {
         // Best effort: this process still enforces its own pause when the shared file cannot be written.
-        await unlink(temporary).catch(() => {});
       }
     }
   };

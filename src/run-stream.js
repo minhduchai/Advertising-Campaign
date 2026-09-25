@@ -19,3 +19,16 @@ export function writeRunEvent(response, event) {
   if (response.writableEnded || response.destroyed) return false;
   return response.write(`${JSON.stringify(event)}\n`);
 }
+
+// Blank NDJSON lines keep idle proxies alive without changing the client's event protocol.
+export async function waitWithRunHeartbeat(response, milliseconds) {
+  const heartbeat = setInterval(() => {
+    if (!response.writableEnded && !response.destroyed) response.write('\n');
+  }, 25000);
+  heartbeat.unref?.();
+  try {
+    await new Promise((resolve) => setTimeout(resolve, milliseconds));
+  } finally {
+    clearInterval(heartbeat);
+  }
+}

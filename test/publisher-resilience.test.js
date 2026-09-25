@@ -51,6 +51,44 @@ const draft = {
 
 const image = () => ({ id: 'media-image', mimeType: 'image/jpeg', name: 'image.jpg', content: Buffer.from('image') });
 
+test('direct publishing waits out throttle at each mutation without recreating successful objects', async () => {
+  for (const throttledMethod of ['createCampaign', 'createAdSet', 'uploadImage', 'createCreative', 'createAd']) {
+    const calls = {};
+    const waits = [];
+    const metaClient = Object.fromEntries(['createCampaign', 'createAdSet', 'uploadImage', 'createCreative', 'createAd'].map((method) => [method, async () => {
+      calls[method] = (calls[method] ?? 0) + 1;
+      if (method === throttledMethod && calls[method] === 1) {
+        throw Object.assign(new Error('quota'), { name: 'MetaThrottleError', retryable: true, statusCode: 429, retryAfterMs: 120000 });
+      }
+      return `${method}-remote`;
+    }]));
+    const result = await publishDraft({ draft, token: 'fake', runId: 'quota', ownerMetaUserId: 'owner',
+      metaClient, getMedia: image, waitForThrottle: true, delay: async (ms) => { waits.push(ms); } });
+    assert.equal(result.complete, true);
+    assert.ok(result.nodes.every((node) => node.status === 'created'));
+    assert.deepEqual(waits, [120000]);
+    for (const method of Object.keys(metaClient)) assert.equal(calls[method], method === throttledMethod ? 2 : 1);
+  }
+});
+
+test('waiting for quota never retries an uncertain mutation or changes the default Workflow behavior', async () => {
+  for (const [waitForThrottle, error] of [
+    [true, new TypeError('fetch failed')],
+    [false, Object.assign(new Error('quota'), { name: 'MetaThrottleError', retryAfterMs: 120000 })]
+  ]) {
+    let calls = 0;
+    const publish = () => publishDraft({ draft, token: 'fake', runId: 'run', metaClient: {
+      createCampaign: async () => { calls++; throw error; }
+    }, getMedia: image, waitForThrottle,
+    delay: async () => assert.fail('must not wait or retry this error') });
+    if (waitForThrottle) {
+      const result = await publish();
+      assert.equal(result.nodes[0].status, 'failed');
+    } else await assert.rejects(publish, { name: 'MetaThrottleError' });
+    assert.equal(calls, 1);
+  }
+});
+
 test('with onDeadline "return" a hard deadline releases the interrupted ad for the next call instead of throwing', async () => {
   let clock = 0;
   const updates = [];

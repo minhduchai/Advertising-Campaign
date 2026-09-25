@@ -52,6 +52,7 @@ export async function publishDraft({
   // 'throw' (mặc định): quá mốc cứng thì ném PublicationDeadlineError. 'return': đưa node dở về retry_pending rồi trả
   // { complete: false, deadlineHit: true } để workflow làm tiếp ở lần gọi sau thay vì coi là lỗi.
   onDeadline = 'throw',
+  waitForThrottle = false,
   // Mốc bắt đầu lượt chạy (ms). Chỉ dùng khi nhận lại đối tượng đã tạo dở: đối tượng cũ hơn mốc này không bao giờ bị nhận nhầm.
   runStartedAt = null
 }) {
@@ -84,6 +85,7 @@ export async function publishDraft({
   });
   const report = async (node) => {
     const existingIndex = nodes.findIndex((entry) => entry.clientId === node.clientId);
+    if (node.status === 'created' && nodes[existingIndex]?.error) node = { ...node, error: null };
     if (existingIndex >= 0) {
       nodes[existingIndex] = { ...nodes[existingIndex], ...node };
     } else {
@@ -177,7 +179,26 @@ export async function publishDraft({
 
   let deadlineHit = false;
   try {
-    await publishAll();
+    while (true) {
+      try {
+        await publishAll();
+        break;
+      } catch (error) {
+        if (!waitForThrottle || !isMetaThrottleError(error)) throw error;
+        // runAll has drained in-flight writes. Keep successful nodes/artifacts and retry only
+        // definite throttle rejections after the requested cooldown, never uncertain writes.
+        for (const cache of [creativeArtifacts, metaVideoIds, metaImageHashes, readyVideos]) {
+          for (const [key, pending] of cache) {
+            try { await pending; } catch { cache.delete(key); }
+          }
+        }
+        const retryAfterMs = Number(error.retryAfterMs);
+        const waitMs = Math.max(1000, Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? retryAfterMs : 30000);
+        if (now() + waitMs >= deadlineAt) throw error;
+        await delay(waitMs);
+        assertPublicationDeadline(deadlineContext);
+      }
+    }
     await cleanupUnusedPublicPosts(creativeArtifacts, metaClient, report, deadlineContext);
   } catch (error) {
     if (onDeadline !== 'return' || !isPublicationDeadlineError(error)) throw error;

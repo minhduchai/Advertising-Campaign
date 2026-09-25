@@ -566,6 +566,38 @@ test('publishes a valid owned draft and returns per-node creation results', asyn
   assert.ok(savedNodes.some((node) => node.status === 'creating'));
 });
 
+test('a streaming direct run completes after throttle without sending a second HTTP response or recreating parents', async (context) => {
+  const calls = { campaign: 0, adset: 0, creative: 0, ad: 0 };
+  const statuses = [];
+  const { server, headers } = createPublishRouteServer(context, {
+    db: { updateRunStatus: (_id, status) => { statuses.push(status); } },
+    metaClient: {
+      createCampaign: async () => { calls.campaign++; return 'campaign-remote'; },
+      createAdSet: async () => { calls.adset++; return 'adset-remote'; },
+      createCreative: async () => { calls.creative++; return 'creative-remote'; },
+      createAd: async () => {
+        calls.ad++;
+        if (calls.ad === 1) throw Object.assign(new Error('quota'), {
+          name: 'MetaThrottleError', statusCode: 429, retryable: true, retryAfterMs: 1
+        });
+        return 'ad-remote';
+      }
+    }
+  });
+  const result = await request(server, '/api/runs', {
+    method: 'POST', headers: { ...headers, 'content-type': 'application/json', accept: 'application/x-ndjson' },
+    body: JSON.stringify(draft)
+  });
+  const events = parseNdjson(result.body);
+  assert.equal(result.status, 201);
+  assert.equal(events.at(-1).type, 'run_completed');
+  assert.equal(events.at(-1).status, 'completed');
+  assert.ok(events.some((event) => event.node?.status === 'retry_pending'));
+  assert.ok(events.at(-1).nodes.every((node) => !node.error), 'old quota errors must not survive a successful retry');
+  assert.deepEqual(calls, { campaign: 1, adset: 1, creative: 1, ad: 2 });
+  assert.equal(statuses.at(-1), 'completed');
+});
+
 test('streams a persisted run start before Meta publication completes', async (context) => {
   const campaignGate = deferred();
   const { server, headers } = createPublishRouteServer(context, {

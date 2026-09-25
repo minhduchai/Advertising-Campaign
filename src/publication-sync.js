@@ -35,7 +35,10 @@ export async function syncRunPublications({
     if (resolvedSibling) {
       await db.savePublication(run.id, group.nodes.filter((node) => !hasCompletePublication(node)), resolvedSibling);
       summary.resolvedGroups += 1;
-    } else if (due.length < maxGroups && group.nodes.some((node) => (schedule.get(node.clientId)?.nextAt ?? 0) <= now())) {
+    } else if (groupNextAt(group) > now()) {
+      summary.pendingGroups += 1;
+      await followGroupSchedule(group);
+    } else if (due.length < maxGroups) {
       due.push(group);
     } else {
       summary.pendingGroups += 1;
@@ -43,10 +46,10 @@ export async function syncRunPublications({
   }
   const claimed = new Set(due.length === 0 ? [] : await db.claimPublicationLookups(
     run.id,
-    due.flatMap((group) => group.nodes.map((node) => node.clientId)),
+    due.map((group) => group.scheduleKey),
     { now: now(), leaseUntil: now() + LOOKUP_LEASE_MS }
   ));
-  const toAttempt = due.filter((group) => group.nodes.some((node) => claimed.has(node.clientId)));
+  const toAttempt = due.filter((group) => claimed.has(group.scheduleKey));
   summary.pendingGroups += due.length - toAttempt.length;
   summary.attemptedGroups = toAttempt.length;
 
@@ -60,14 +63,16 @@ export async function syncRunPublications({
   return summary;
 
   async function attempt(group) {
-    const clientIds = group.nodes.map((node) => node.clientId);
+    // Only the stable group key owns the lease; node rows follow it for the recovery worker's per-Ad query.
+    const clientIds = [group.scheduleKey, ...group.nodes.map((node) => node.clientId)];
     const attempts = 1 + Math.max(0, ...clientIds.map((clientId) => Number(schedule.get(clientId)?.attempts) || 0));
     try {
       const representative = group.nodes.find((node) => node.remoteId);
       const publication = await metaClient.getAdPublication(token, representative.remoteId);
       if (publication?.postId || publication?.permalinkUrl) await db.savePublication(run.id, group.nodes, publication);
       if (hasCompletePublication(publication)) {
-        await db.schedulePublicationLookups(run.id, clientIds, { attempts: 0, nextAt: now(), code: null });
+        // The group keeps its lease: a caller still holding a run read before this save cannot claim it
+        // again at once, and once saved the group is no longer missing a Post.
         summary.resolvedGroups += 1;
         return;
       }
@@ -92,6 +97,25 @@ export async function syncRunPublications({
     summary.pendingGroups += 1;
   }
 
+  function groupNextAt(group) {
+    const shared = schedule.get(group.scheduleKey);
+    if (shared) return shared.nextAt;
+    // Preserve cooldowns written by the previous per-Ad implementation on first use.
+    return Math.max(0, ...group.nodes.map((node) => schedule.get(node.clientId)?.nextAt ?? 0));
+  }
+
+  // An Ad created while its group is leased or backing off takes the group's date, so the recovery
+  // worker's per-Ad candidate query does not keep picking this run before the group is due.
+  async function followGroupSchedule(group) {
+    const shared = schedule.get(group.scheduleKey);
+    if (!shared) return;
+    const behind = group.nodes.filter((node) => (schedule.get(node.clientId)?.nextAt ?? 0) < shared.nextAt);
+    if (behind.length === 0) return;
+    await db.schedulePublicationLookups(run.id, behind.map((node) => node.clientId), {
+      attempts: shared.attempts, nextAt: shared.nextAt, code: null
+    });
+  }
+
   // If even this write fails, the lease expires and the group is retried.
   async function reschedule(clientIds, value) {
     try {
@@ -110,7 +134,7 @@ function publicationGroups(run) {
   for (const node of run?.nodes ?? []) {
     if (node.type !== 'ad' || node.status !== 'created' || !node.remoteId) continue;
     const key = publicationGroupKey(node, adsByClientId.get(node.clientId));
-    const group = groups.get(key) ?? { key, nodes: [] };
+    const group = groups.get(key) ?? { key, scheduleKey: `publication-group:${key}`, nodes: [] };
     group.nodes.push(node);
     groups.set(key, group);
   }

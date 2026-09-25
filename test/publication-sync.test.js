@@ -26,6 +26,48 @@ const sharedGroupSnapshot = {
   }]
 };
 
+test('a new sibling cannot bypass an in-flight creative group lease or its backoff', async () => {
+  const db = runStore([createdAd(1, { creativeId: 'shared' })]);
+  let enter, release;
+  const entered = new Promise((resolve) => { enter = resolve; });
+  const held = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  let time = 1000;
+  const metaClient = { getAdPublication: async () => {
+    calls += 1;
+    if (calls === 1) { enter(); await held; }
+    return {};
+  } };
+  const sync = () => syncRunPublications({ run: db.getRun('run-1'), db, token: 'fake', metaClient, now: () => time });
+  const first = sync();
+  await entered;
+  db.updateNodeResult('run-1', createdAd(2, { creativeId: 'shared' }));
+  try {
+    await sync();
+    assert.equal(calls, 1, 'new Ad must not claim another lease for the same creative');
+  } finally { release(); await first; }
+  db.updateNodeResult('run-1', createdAd(3, { creativeId: 'shared' }));
+  time = 4000;
+  await sync();
+  assert.equal(calls, 1, 'new Ad must also respect the group backoff');
+  assert.equal(db.listPublicationLookups('run-1').find((entry) => entry.clientId === 'ad-3')?.nextAt, 61000,
+    'cron must not keep selecting a new sibling whose group is already cooling down');
+  time = 61000;
+  await sync();
+  assert.equal(calls, 2);
+});
+
+test('a stale snapshot cannot re-query a group another caller has already resolved', async () => {
+  const db = runStore([createdAd(1, { creativeId: 'shared' })]);
+  const staleRun = db.getRun('run-1');
+  let calls = 0;
+  const input = { run: staleRun, db, token: 'fake', now: () => 1000,
+    metaClient: { getAdPublication: async () => { calls++; return published('r1'); } } };
+  await syncRunPublications(input);
+  await syncRunPublications(input);
+  assert.equal(calls, 1);
+});
+
 test('repeated syncs while Post IDs are missing only call Meta when each lookup is due', async () => {
   const db = runStore(twelveAds());
   let lookups = 0;
