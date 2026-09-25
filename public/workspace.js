@@ -1009,18 +1009,23 @@ function pagePicker(state, campaign) {
     selectedLabel: selected ? pageDisplayLabel(selected) : 'Chọn Facebook Page',
     placeholder: 'Tìm tên Page hoặc ID...', emptyMessage: 'Không tìm thấy kết quả phù hợp', disabled,
     options: pages.map((page) => {
-      const restrictedForAccount = eligibilityKnown && !promotablePageIds.has(String(page.id));
-      const restricted = page.canAdvertise === false || restrictedForAccount;
+      const restricted = page.canAdvertise === false;
+      // Meta's promote_pages can leave out Business Portfolio Pages that Ads Manager still allows, so a Page
+      // missing from it stays selectable with a warning instead of being locked.
+      const warning = !restricted && eligibilityKnown && !promotablePageIds.has(String(page.id));
       return {
         id: page.id,
         name: page.name || page.id,
         detail: restricted
           ? page.unavailableReason || 'Page không thể quảng cáo bằng tài khoản đã chọn'
-          : `ID ${page.id}`,
+          : warning
+            ? `ID ${page.id} · Không có trong danh sách Page quảng bá của tài khoản này, Meta có thể từ chối khi tạo quảng cáo`
+            : `ID ${page.id}`,
         search: pageDisplayLabel(page),
         label: pageDisplayLabel(page),
         legacyText: '',
-        restricted
+        restricted,
+        warning
       };
     })
   }) + reconnectWarning;
@@ -1032,10 +1037,11 @@ function resourcePicker({ label, kind, clientId, selectedId, selectedLabel, plac
   const selected = options.find((option) => option.id === selectedId);
   const initial = (selected?.name ?? '?').trim().charAt(0).toUpperCase() || '?';
   const list = options.map((option, index) => `
-    <button id="${escapeHtml(`${panelId}-option-${index}`)}" type="button" class="smart-resource-option${option.id === selectedId ? ' is-selected' : ''}${option.restricted ? ' is-restricted' : ''}" data-smart-resource-option data-value="${escapeHtml(option.id)}" data-name="${escapeHtml(option.name)}" data-detail="${escapeHtml(option.detail)}" data-search-index="${index}" role="option" aria-selected="${option.id === selectedId}" tabindex="-1"${option.restricted ? ' disabled aria-disabled="true"' : ''}>
+    <button id="${escapeHtml(`${panelId}-option-${index}`)}" type="button" class="smart-resource-option${option.id === selectedId ? ' is-selected' : ''}${option.restricted ? ' is-restricted' : ''}${option.warning ? ' is-warning' : ''}" data-smart-resource-option data-value="${escapeHtml(option.id)}" data-name="${escapeHtml(option.name)}" data-detail="${escapeHtml(option.detail)}" data-search-index="${index}" role="option" aria-selected="${option.id === selectedId}" tabindex="-1"${option.restricted ? ' disabled aria-disabled="true"' : ''}>
       <span class="smart-resource-avatar">${escapeHtml((option.name ?? '?').trim().charAt(0).toUpperCase() || '?')}</span>
       <span class="smart-resource-option-copy"><strong>${escapeHtml(option.name)}</strong><small>${escapeHtml(option.detail)}</small></span>
       ${option.restricted ? '<span class="smart-resource-restricted-badge">Hạn chế</span>' : ''}
+      ${option.warning ? '<span class="smart-resource-warning-badge">Lưu ý</span>' : ''}
       <span class="smart-resource-check" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12 4.2 4.2L19 6.5"/></svg></span>
     </button>`).join('');
   return `
@@ -1043,8 +1049,8 @@ function resourcePicker({ label, kind, clientId, selectedId, selectedLabel, plac
       <span class="field-label">${escapeHtml(label)}</span>
       <div class="smart-resource-picker expand-select${disabled ? ' is-disabled' : ''}" data-smart-resource-picker data-expand-select data-resource-kind="${escapeHtml(kind)}" data-validation-field="${escapeHtml(kind)}" data-client-id="${escapeHtml(clientId)}">
       <input type="hidden" data-resource-combobox="${escapeHtml(kind)}" data-client-id="${escapeHtml(clientId)}" value="${escapeHtml(selected ? (selected.label ?? selectedLabel) : '')}" />
-      <button type="button" class="smart-resource-trigger expand-select-trigger${selected?.restricted ? ' is-restricted' : ''}" data-action="toggle-smart-resource" data-expand-select-trigger aria-label="${escapeHtml(`${label}: ${selectedLabel}`)}" aria-haspopup="listbox" aria-expanded="false" aria-controls="${escapeHtml(panelId)}" ${disabled ? 'disabled' : ''}>
-        <span class="smart-resource-trigger-left"><span class="smart-resource-avatar">${escapeHtml(initial)}</span><span class="smart-resource-trigger-text${selected ? ' is-selected' : ''}">${escapeHtml(selectedLabel)}</span>${selected?.restricted ? '<span class="smart-resource-restricted-badge">Hạn chế</span>' : ''}</span>
+      <button type="button" class="smart-resource-trigger expand-select-trigger${selected?.restricted ? ' is-restricted' : ''}${selected?.warning ? ' is-warning' : ''}" data-action="toggle-smart-resource" data-expand-select-trigger aria-label="${escapeHtml(`${label}: ${selectedLabel}${selected?.warning ? ` (${selected.detail})` : ''}`)}" aria-haspopup="listbox" aria-expanded="false" aria-controls="${escapeHtml(panelId)}" ${disabled ? 'disabled' : ''}>
+        <span class="smart-resource-trigger-left"><span class="smart-resource-avatar">${escapeHtml(initial)}</span><span class="smart-resource-trigger-text${selected ? ' is-selected' : ''}">${escapeHtml(selectedLabel)}</span>${selected?.restricted ? '<span class="smart-resource-restricted-badge">Hạn chế</span>' : ''}${selected?.warning ? '<span class="smart-resource-warning-badge">Lưu ý</span>' : ''}</span>
         <span class="smart-resource-chevron" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></span>
       </button>
       <div class="smart-resource-panel expand-select-expand" id="${escapeHtml(panelId)}" role="dialog" aria-label="${escapeHtml(label)}" aria-hidden="true"><div class="expand-select-expand-inner"><div class="expand-select-body">

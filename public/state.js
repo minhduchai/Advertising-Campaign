@@ -661,6 +661,9 @@ export function setAccountResources(state, accountId, resources) {
     loaded: resources?.loaded ?? false,
     customAudiences: resources?.customAudiences ?? [],
     savedAudiences: resources?.savedAudiences ?? [],
+    // The account's promote_pages; the Page picker only warns, since Meta can omit Business Portfolio Pages.
+    promotablePageIds: (resources?.promotablePageIds ?? []).map(String),
+    pageEligibilityKnown: resources?.pageEligibilityKnown === true,
     targetingResults: resources?.targetingResults ?? [],
     locationResults: resources?.locationResults ?? []
   };

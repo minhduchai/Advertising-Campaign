@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import * as workspaceModule from '../public/workspace.js';
+import { setAccountResources } from '../public/state.js';
 
 const {
   highlightResourceSearch,
@@ -1175,6 +1176,36 @@ test('omits Campaign descendants when the Campaign is collapsed', () => {
   assert.match(expandedHtml, /data-client-id="adset-1"/);
   assert.match(collapsedHtml, /data-action="toggle-campaign-collapse"[^>]*aria-expanded="false"/);
   assert.doesNotMatch(collapsedHtml, /data-action="select-node"[^>]*data-client-id="adset-1"/);
+});
+
+test('warns about a Page the ad account does not list for promotion but keeps it selectable', () => {
+  const state = workspaceFixture({ selectedClientId: 'campaign-1' });
+  state.draft.campaigns[0].pageId = 'page-2';
+  state.resources.pages = [
+    { id: 'page-1', name: 'LG Clinic', canAdvertise: true },
+    { id: 'page-2', name: 'LG Portfolio', canAdvertise: true }
+  ];
+  setAccountResources(state, 'act_1', { loaded: true, promotablePageIds: ['page-1'], pageEligibilityKnown: true });
+
+  const html = renderWorkspace(state);
+  const option = (pageId) => new RegExp(`<button[^>]*data-value="${pageId}"[^>]*>`).exec(html)?.[0] ?? '';
+
+  assert.match(option('page-2'), /is-warning/);
+  assert.doesNotMatch(option('page-2'), /disabled/);
+  assert.doesNotMatch(option('page-1'), /is-warning|disabled/);
+  assert.match(html, /class="smart-resource-trigger[^"]*is-warning/);
+  assert.match(html, /Không có trong danh sách Page quảng bá của tài khoản này/);
+});
+
+test('shows no Page warning while the ad account promotable Pages are unknown', () => {
+  const state = workspaceFixture({ selectedClientId: 'campaign-1' });
+  state.resources.pages = [
+    { id: 'page-1', name: 'LG Clinic', canAdvertise: true },
+    { id: 'page-2', name: 'LG Portfolio', canAdvertise: true }
+  ];
+  setAccountResources(state, 'act_1', { loaded: true, promotablePageIds: [], pageEligibilityKnown: false });
+
+  assert.doesNotMatch(renderWorkspace(state), /is-warning/);
 });
 
 test('lists available and restricted Pages with reconnect guidance', () => {

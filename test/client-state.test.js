@@ -341,9 +341,24 @@ test('keeps the shared Page catalog outside account-specific resources', () => {
 
   assert.deepEqual(state.resources.pages, [{ id: 'page-1', name: 'LG Clinic', canAdvertise: true }]);
   assert.deepEqual(state.resources.pageDiscovery, { loaded: true, counts: { total: 1 } });
-  assert.equal(accountResources.promotablePageIds, undefined);
+  assert.deepEqual(accountResources.promotablePageIds, []);
+  assert.equal(accountResources.pageEligibilityKnown, false);
   assert.equal(accountResources.pages, undefined);
   assert.equal(accountResources.pageDiscovery, undefined);
+});
+
+test('keeps the ad account promotable Page IDs with its resources', () => {
+  const state = createWorkspaceState({
+    randomId: idSequence('campaign-1', 'adset-1', 'ad-1')
+  });
+
+  const accountResources = setAccountResources(state, 'act_1', {
+    loaded: true, promotablePageIds: ['page-1', 2], pageEligibilityKnown: true
+  });
+
+  assert.deepEqual(accountResources.promotablePageIds, ['page-1', '2']);
+  assert.equal(accountResources.pageEligibilityKnown, true);
+  assert.equal(state.resources.accountResourcesById.act_1, accountResources);
 });
 
 test('new Campaign starts without account and Page while account changes preserve its Page and clear its subtree', () => {

@@ -9159,6 +9159,25 @@ textarea:focus-visible {
   color: var(--color-danger);
 }
 
+.smart-resource-option.is-warning .smart-resource-option-copy small {
+  color: var(--color-warning);
+  white-space: normal;
+}
+
+.smart-resource-warning-badge {
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.smart-resource-trigger.is-warning {
+  border-color: var(--color-warning);
+}
+
 .smart-resource-option-copy {
   display: grid;
   min-width: 0;
