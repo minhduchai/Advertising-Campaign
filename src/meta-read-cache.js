@@ -9,7 +9,7 @@ import { createMetaRequestCache } from './meta-request-cache.js';
 export function createMetaReadCache({ directory, encryptionKey, now = Date.now }) {
   const memory = createMetaRequestCache({ now });
   return {
-    async load(identity, ttlMs, loader) {
+    async load(identity, ttlMs, loader, { shouldCache = () => true } = {}) {
       const key = createHash('sha256').update(identity).digest('hex');
       const loadEntry = async () => {
         if (!directory) return { value: await loader(), expiresAt: now() + ttlMs };
@@ -64,6 +64,7 @@ export function createMetaReadCache({ directory, encryptionKey, now = Date.now }
           if (ready) return ready;
           const value = await loader();
           const entry = { expiresAt: now() + ttlMs, value };
+          if (!shouldCache(value)) return entry;
           const encrypted = encryptToken(JSON.stringify(entry), encryptionKey);
           await writeFile(temporary, encrypted, { mode: 0o600 });
           await rename(temporary, path);
@@ -79,6 +80,7 @@ export function createMetaReadCache({ directory, encryptionKey, now = Date.now }
         memory.invalidatePrefix(key);
         entry = await memory.load(key, ttlMs, loadEntry);
       }
+      if (!shouldCache(entry.value)) memory.invalidatePrefix(key);
       return structuredClone(entry.value);
     }
   };

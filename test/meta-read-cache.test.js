@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { createMetaReadCache } from '../src/meta-read-cache.js';
 import { createMetaClient } from '../src/meta-client.js';
 import { testConfig } from './helpers.js';
+import { decryptToken } from '../src/crypto.js';
 
 async function directoryFor(t) {
   const directory = await mkdtemp(join(tmpdir(), 'meta-cache-test-'));
@@ -70,7 +71,7 @@ test('disk hits do not extend expiry, mutations do not leak, and failed refreshe
   assert.equal((await readdir(directory)).some(name => /\.lock$|\.tmp$/.test(name)), false);
 });
 
-test('writes and video polling are never cached', async () => {
+test('writes and pending video polling are never cached', async () => {
   let calls = 0;
   const client = createMetaClient(testConfig(), { fetchImpl: async () => {
     calls++;
@@ -81,6 +82,87 @@ test('writes and video polling are never cached', async () => {
   await client.createPageComment('page-token', 'post', { message: 'one' });
   await client.createPageComment('page-token', 'post', { message: 'two' });
   assert.equal(calls, 4);
+});
+
+test('ready videos survive client restart, but pending and failed videos never persist', async t => {
+  const directory = await directoryFor(t);
+  const config = { ...testConfig(), metaReadCacheDirectory: directory };
+  let calls = 0;
+  let status = 'processing';
+  const fetchImpl = async () => {
+    calls++;
+    return Response.json({ status: { video_status: status }, thumbnails: { data: [{ uri: 'https://example.com/thumb' }] } });
+  };
+  const client = createMetaClient(config, { fetchImpl });
+  await client.getVideoStatus('token-a', 'video');
+  await client.getVideoStatus('token-a', 'video');
+  assert.equal(calls, 2);
+  assert.deepEqual(await readdir(directory), []);
+  status = 'error';
+  await client.getVideoStatus('token-a', 'video');
+  assert.deepEqual(await readdir(directory), []);
+  status = 'ready';
+  await client.getVideoStatus('token-a', 'video');
+  const restarted = createMetaClient(config, { fetchImpl });
+  assert.equal((await restarted.getVideoStatus('token-a', 'video')).thumbnail.imageUrl, 'https://example.com/thumb');
+  assert.equal(calls, 4);
+  await restarted.getVideoStatus('token-b', 'video');
+  assert.equal(calls, 5, 'different tokens must not share cached data');
+});
+
+test('selective cache expires ready values and never retains a non-cacheable refresh', async t => {
+  const directory = await directoryFor(t);
+  let now = 0;
+  const options = { directory, encryptionKey: Buffer.alloc(32, 7), now: () => now };
+  const cache = createMetaReadCache(options);
+  let calls = 0;
+  let ready = true;
+  const read = client => client.load('video', 1000, async () => ({ ready, calls: ++calls }), { shouldCache: value => value.ready });
+  await read(cache);
+  now = 1001;
+  ready = false;
+  await read(cache);
+  await read(cache);
+  await read(createMetaReadCache(options));
+  assert.equal(calls, 4);
+});
+
+test('Business discovery uses 15 minutes without extending permission or token cache', async t => {
+  const directory = await directoryFor(t);
+  const config = { ...testConfig(), metaReadCacheDirectory: directory };
+  const client = createMetaClient(config, { fetchImpl: async url => Response.json({
+    data: String(url).includes('/businesses') ? [{ id: 'business' }] : []
+  }) });
+  const start = Date.now();
+  await client.listGlobalPageCatalog('token');
+  await client.getPageEngagementContext('token', ['page']);
+  const durations = await Promise.all((await readdir(directory)).map(async file => {
+    const entry = JSON.parse(decryptToken(await readFile(join(directory, file), 'utf8'), config.tokenEncryptionKey));
+    return Math.round((entry.expiresAt - start) / 60000);
+  }));
+  assert.equal(durations.filter(minutes => minutes === 15).length, 3);
+  assert.equal(durations.filter(minutes => minutes === 5).length, 3);
+});
+
+test('different Ads sharing a Post reuse its actual permalink across workers', async t => {
+  const directory = await directoryFor(t);
+  const config = { ...testConfig(), metaReadCacheDirectory: directory };
+  let postReads = 0;
+  let adReads = 0;
+  const fetchImpl = async url => {
+    if (new URL(url).searchParams.get('fields') === 'permalink_url') {
+      postReads++;
+      return Response.json({ permalink_url: 'https://www.facebook.com/reel/123' });
+    }
+    adReads++;
+    return Response.json({ creative: { effective_object_story_id: '1_123' } });
+  };
+  for (const id of ['ad-1', 'ad-2']) {
+    const result = await createMetaClient(config, { fetchImpl }).getAdPublication('token', id);
+    assert.equal(result.permalinkUrl, 'https://www.facebook.com/reel/123');
+  }
+  assert.equal(adReads, 2, 'do not guess different Ads share the same Post');
+  assert.equal(postReads, 1);
 });
 
 test('recovers an abandoned worker lock and an unreadable encrypted entry', async t => {

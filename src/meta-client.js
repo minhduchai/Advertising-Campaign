@@ -320,9 +320,13 @@ export function createMetaClient(config, { fetchImpl = fetch, networkRetryDelay 
     },
 
     async getVideoStatus(token, videoId, options = {}) {
-      const payload = await requestJson(fetchImpl, `${graphBaseUrl}/${videoId}`, {
-        fields: 'status,thumbnails'
-      }, token, options);
+      const payload = await fetchImpl.readCache.load(
+        JSON.stringify(['ready-video', graphBaseUrl, token, videoId]), 30 * 60_000,
+        () => requestJson(fetchImpl, `${graphBaseUrl}/${videoId}`, {
+          fields: 'status,thumbnails'
+        }, token, options),
+        { shouldCache: value => value?.status?.video_status === 'ready' }
+      );
       const thumbnail = payload.thumbnails?.data?.[0];
       return {
         status: payload.status,
@@ -426,11 +430,15 @@ export function createMetaClient(config, { fetchImpl = fetch, networkRetryDelay 
       }
       const fallbackUrl = facebookPostFallbackUrl(postId);
       try {
-        const post = await requestJson(fetchImpl, `${graphBaseUrl}/${postId}`, {
-          fields: 'permalink_url'
-        }, token, { ...lookupOptions, signal: AbortSignal.any([
-          lookupOptions.signal, AbortSignal.timeout(2500)
-        ]) });
+        const post = await fetchImpl.readCache.load(
+          JSON.stringify(['post-permalink', graphBaseUrl, token, postId]), 5 * 60_000,
+          () => requestJson(fetchImpl, `${graphBaseUrl}/${postId}`, {
+            fields: 'permalink_url'
+          }, token, { ...lookupOptions, signal: AbortSignal.any([
+            lookupOptions.signal, AbortSignal.timeout(2500)
+          ]) }),
+          { shouldCache: value => Boolean(value?.permalink_url) }
+        );
         return {
           postId,
           permalinkUrl: post.permalink_url ?? fallbackUrl
@@ -616,7 +624,10 @@ function isMissingBusinessPermission(error) {
 async function requestPaged(fetchImpl, initialUrl, params, token) {
   // Cache only resource discovery, never mutations, video polling or ad results.
   if (/\/(?:me\/(?:permissions|accounts|businesses)|[^/]+\/(?:owned_pages|client_pages))$/.test(new URL(initialUrl).pathname)) {
-    return fetchImpl.readCache.load(JSON.stringify([initialUrl, params, token]), 5 * 60_000,
+    // Discovery may match the workspace's 15-minute cache. Permissions and Page tokens keep 5 minutes.
+    const discoveryOnly = /\/(?:me\/businesses|[^/]+\/(?:owned_pages|client_pages))$/.test(new URL(initialUrl).pathname)
+      && !String(params.fields ?? '').includes('access_token');
+    return fetchImpl.readCache.load(JSON.stringify([initialUrl, params, token]), (discoveryOnly ? 15 : 5) * 60_000,
       () => requestPagedUncached(fetchImpl, initialUrl, params, token, AbortSignal.timeout(60_000)));
   }
   return requestPagedUncached(fetchImpl, initialUrl, params, token);
