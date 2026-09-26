@@ -26,6 +26,45 @@ const sharedGroupSnapshot = {
   }]
 };
 
+test('missing creative IDs never share publication even with the same draft group', async () => {
+  const snapshot = structuredClone(sharedGroupSnapshot);
+  snapshot.campaigns[0].adSets[0].ads.forEach((ad, index) => { ad.primaryText = `Offer ${index}`; });
+  const db = runStore([createdAd(1), createdAd(2)], snapshot);
+  const calls = [];
+  await syncRunPublications({ run: db.getRun('run-1'), db, token: 'fake',
+    metaClient: { getAdPublication: async (_token, id) => { calls.push(id); return published(id); } } });
+  assert.equal(calls.length, 2);
+  assert.deepEqual(db.getRun('run-1').nodes.map((node) => node.postId), ['1_remote-ad-1', '1_remote-ad-2']);
+});
+
+test('a resolved Ad without creative ID cannot supply a sibling publication', async () => {
+  const db = runStore([createdAd(1, published('remote-ad-1')), createdAd(2)], sharedGroupSnapshot);
+  const calls = [];
+  await syncRunPublications({ run: db.getRun('run-1'), db, token: 'fake',
+    metaClient: { getAdPublication: async (_token, id) => { calls.push(id); return published(id); } } });
+  assert.deepEqual(calls, ['remote-ad-2']);
+  assert.equal(db.getRun('run-1').nodes[1].postId, '1_remote-ad-2');
+});
+
+test('legacy per-Ad cooldown propagates to siblings and still retries when due', async () => {
+  const db = runStore([createdAd(1, { creativeId: 'shared' }), createdAd(2, { creativeId: 'shared' })]);
+  db.schedulePublicationLookups('run-1', ['ad-1'], { attempts: 4, nextAt: 61000, code: null });
+  let time = 1000, calls = 0;
+  const sync = () => syncRunPublications({ run: db.getRun('run-1'), db, token: 'fake', now: () => time,
+    metaClient: { getAdPublication: async () => { calls++; return {}; } } });
+  await sync();
+  const schedule = db.listPublicationLookups('run-1');
+  assert.equal(schedule.find((row) => row.clientId === 'ad-2')?.nextAt, 61000);
+  assert.equal(schedule.find((row) => row.clientId === 'ad-2')?.attempts, 4);
+  time = 60000;
+  await sync();
+  assert.equal(calls, 0);
+  time = 61000;
+  await sync();
+  assert.equal(calls, 1);
+  assert.ok(db.listPublicationLookups('run-1').every((row) => row.nextAt === 1021000));
+});
+
 test('a new sibling cannot bypass an in-flight creative group lease or its backoff', async () => {
   const db = runStore([createdAd(1, { creativeId: 'shared' })]);
   let enter, release;
@@ -185,7 +224,7 @@ test('looks up unresolved groups in parallel but never more than `concurrency` a
 });
 
 test('resolves one representative and updates every Ad sharing a creative group', async () => {
-  const db = runStore([createdAd(1), createdAd(2, { parentClientId: 'adset-2' })], sharedGroupSnapshot);
+  const db = runStore([createdAd(1, { creativeId: 'shared' }), createdAd(2, { creativeId: 'shared', parentClientId: 'adset-2' })], sharedGroupSnapshot);
   const calls = [];
 
   const sync = await syncRunPublications({
@@ -210,8 +249,8 @@ test('resolves one representative and updates every Ad sharing a creative group'
 
 test('reuses an already resolved sibling without another Meta request', async () => {
   const db = runStore([
-    createdAd(1, { postId: '123_456', permalinkUrl: 'https://www.facebook.com/123/posts/456' }),
-    createdAd(2)
+    createdAd(1, { creativeId: 'shared', postId: '123_456', permalinkUrl: 'https://www.facebook.com/123/posts/456' }),
+    createdAd(2, { creativeId: 'shared' })
   ], sharedGroupSnapshot);
 
   const sync = await syncRunPublications({
@@ -227,7 +266,7 @@ test('reuses an already resolved sibling without another Meta request', async ()
 });
 
 test('keeps unresolved publications pending and returns sanitized Meta errors', async () => {
-  const db = runStore([createdAd(1), createdAd(2)], sharedGroupSnapshot);
+  const db = runStore([createdAd(1, { creativeId: 'shared' }), createdAd(2, { creativeId: 'shared' })], sharedGroupSnapshot);
   const error = new Error('Token expired');
   error.meta = { code: 190, subcode: 463, message: 'Token expired', accessToken: 'must-not-leak' };
 

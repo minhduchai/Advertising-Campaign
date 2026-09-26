@@ -74,13 +74,43 @@ test('deduplicates a shared post inside one campaign while retaining item order'
 
   const prepared = buildSeedingPreparation(run, [], { now: NOW });
 
-  assert.deepEqual(Object.keys(prepared), ['jobs', 'conflicts', 'waitingPostCount', 'invalidTargets']);
+  assert.deepEqual(Object.keys(prepared), ['jobs', 'conflicts', 'waitingPostCount', 'invalidTargets', 'waitingCampaignCount']);
   assert.equal(prepared.jobs.length, 2);
   assert.deepEqual(prepared.jobs.map(({ postId, position }) => [postId, position]), [
     ['page-1_100', 0],
     ['page-1_100', 1]
   ]);
   assert.deepEqual(prepared.jobs.map(({ sequence }) => sequence), [0, 0]);
+});
+
+test('seeds a finished campaign while another campaign is still creating', () => {
+  const run = runFixture({
+    campaigns: [campaign({ adIds: ['ad-1', 'ad-2'] }), campaign({ clientId: 'campaign-2', adIds: ['ad-3'] })],
+    nodes: [
+      { clientId: 'ad-1', type: 'ad', status: 'created', postId: 'page-1_100' },
+      { clientId: 'ad-3', type: 'ad', status: 'created', postId: 'page-1_300' }
+    ]
+  });
+  run.status = 'creating';
+  const first = buildSeedingPreparation(run);
+  assert.equal(first.waitingCampaignCount, 1);
+  assert.deepEqual(first.jobs.map(job => job.campaignClientId), ['campaign-2', 'campaign-2']);
+  assert.equal(createSeedingState(run).waitingCampaignCount, 1);
+  run.nodes.push({ clientId: 'ad-2', type: 'ad', status: 'failed' });
+  const next = buildSeedingPreparation(run, first.jobs);
+  assert.equal(next.waitingCampaignCount, 0);
+  assert.deepEqual(next.jobs.map(job => job.campaignClientId), ['campaign-1', 'campaign-1']);
+  assert.equal(buildSeedingPreparation(run, [...first.jobs, ...next.jobs]).jobs.length, 0);
+});
+
+test('reports unfinished campaigns before any ad exists without counting them as missing Post IDs', () => {
+  const run = { ...runFixture({ nodes: [] }), status: 'creating' };
+  const state = createSeedingState(run);
+  assert.equal(state.waitingCampaignCount, 1);
+  assert.equal(state.waitingPostCount, 0);
+  assert.equal(state.summary.total, 0);
+  run.status = 'failed';
+  assert.equal(createSeedingState(run).waitingCampaignCount, 0);
 });
 
 test('creates ordered jobs for distinct posts and positions zero through nine', () => {

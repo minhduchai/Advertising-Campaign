@@ -223,7 +223,8 @@ export function createSeedingState(run, jobs = []) {
     },
     jobs: scopedJobs.map(publicJob),
     conflicts: prepared.conflicts,
-    waitingPostCount: prepared.waitingPostCount
+    waitingPostCount: prepared.waitingPostCount,
+    waitingCampaignCount: prepared.waitingCampaignCount
   };
 }
 
@@ -233,8 +234,14 @@ function buildPreparation(run, existingJobs, { now = Date.now, forcedSelections 
   const campaigns = run?.snapshot?.campaigns ?? [];
   const campaignByAdClientId = new Map();
   const campaignOrder = new Map();
+  const adStatuses = new Map((run?.nodes ?? []).filter(node => node.type === 'ad')
+    .map(node => [String(node.clientId), node.status]));
+  const unfinishedCampaigns = new Set();
   campaigns.forEach((campaign, index) => {
     campaignOrder.set(String(campaign.clientId), index);
+    if (campaign.seeding?.enabled && (campaign.adSets ?? []).some(adSet =>
+      (adSet.ads ?? []).some(ad => !['created', 'failed', 'skipped'].includes(adStatuses.get(String(ad.clientId))))
+    )) unfinishedCampaigns.add(String(campaign.clientId));
     for (const adSet of campaign.adSets ?? []) {
       for (const ad of adSet.ads ?? []) campaignByAdClientId.set(String(ad.clientId), campaign);
     }
@@ -328,6 +335,7 @@ function buildPreparation(run, existingJobs, { now = Date.now, forcedSelections 
   );
   const jobs = [];
   selectedTargets.forEach((target) => {
+    if (unfinishedCampaigns.has(String(target.campaign.clientId))) return;
     (target.campaign.seeding.items ?? []).forEach((item, position) => {
       const descriptor = {
         runId: String(run.id),
@@ -360,7 +368,9 @@ function buildPreparation(run, existingJobs, { now = Date.now, forcedSelections 
     });
   });
 
-  return { jobs, conflicts, waitingPostCount, invalidTargets, targets };
+  const waitingCampaignCount = ['creating', 'retrying_ad', 'seeding'].includes(run?.status)
+    ? unfinishedCampaigns.size : 0;
+  return { jobs, conflicts, waitingPostCount, invalidTargets, waitingCampaignCount, targets };
 }
 
 async function getTrustedAttachmentUrl({ mediaStore, ownerMetaUserId, imageMediaId }) {

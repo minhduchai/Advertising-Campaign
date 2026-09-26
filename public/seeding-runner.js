@@ -56,7 +56,7 @@ export function createSeedingRunner({ api, wait = defaultWait, onUpdate = () => 
 
 export function shouldAutoResumeSeeding(seeding) {
   const summary = seeding?.summary ?? {};
-  return (Number(summary.pending) > 0 || Number(seeding?.waitingPostCount) > 0)
+  return (Number(summary.pending) > 0 || Number(seeding?.waitingPostCount) > 0 || Number(seeding?.waitingCampaignCount) > 0)
     && Number(summary.posting) === 0
     && Number(summary.needsReview) === 0
     && Number(summary.cancelled) === 0
@@ -75,7 +75,7 @@ async function runLoop(runId, control, dependencies) {
       reason = stopReason(state);
       if (reason || control.paused) break;
 
-      if (Number(state.waitingPostCount) > 0 && Number(state.summary?.pending) === 0) {
+      if ((Number(state.waitingPostCount) > 0 || Number(state.waitingCampaignCount) > 0) && Number(state.summary?.pending) === 0) {
         const interrupted = await control.wait(dependencies.wait, postPollIntervalMs);
         if (interrupted) break;
         continue;
@@ -111,7 +111,7 @@ function stopReason(seeding) {
   for (const [key, reason] of blockingSummaryReasons) {
     if (Number(summary[key]) > 0) return reason;
   }
-  return Number(summary.pending) > 0 || Number(seeding?.waitingPostCount) > 0 ? null : 'complete';
+  return Number(summary.pending) > 0 || Number(seeding?.waitingPostCount) > 0 || Number(seeding?.waitingCampaignCount) > 0 ? null : 'complete';
 }
 
 function seedingStateFrom(payload) {

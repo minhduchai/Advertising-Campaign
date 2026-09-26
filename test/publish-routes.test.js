@@ -883,7 +883,8 @@ test('returns only the connected owner run snapshot', async (context) => {
       },
       jobs: [],
       conflicts: [],
-      waitingPostCount: 0
+      waitingPostCount: 0,
+      waitingCampaignCount: 0
     }
   });
 });

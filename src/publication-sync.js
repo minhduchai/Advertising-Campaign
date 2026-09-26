@@ -107,8 +107,12 @@ export async function syncRunPublications({
   // An Ad created while its group is leased or backing off takes the group's date, so the recovery
   // worker's per-Ad candidate query does not keep picking this run before the group is due.
   async function followGroupSchedule(group) {
-    const shared = schedule.get(group.scheduleKey);
-    if (!shared) return;
+    // Old workers only wrote per-Ad rows. Mirror their backoff too, without
+    // upserting a group row that another caller may have just leased.
+    const shared = schedule.get(group.scheduleKey) ?? {
+      nextAt: groupNextAt(group),
+      attempts: Math.max(0, ...group.nodes.map((node) => Number(schedule.get(node.clientId)?.attempts) || 0))
+    };
     const behind = group.nodes.filter((node) => (schedule.get(node.clientId)?.nextAt ?? 0) < shared.nextAt);
     if (behind.length === 0) return;
     await db.schedulePublicationLookups(run.id, behind.map((node) => node.clientId), {
@@ -129,37 +133,17 @@ function backoffMs(attempts) {
 }
 
 function publicationGroups(run) {
-  const adsByClientId = snapshotAds(run?.snapshot);
   const groups = new Map();
   for (const node of run?.nodes ?? []) {
     if (node.type !== 'ad' || node.status !== 'created' || !node.remoteId) continue;
-    const key = publicationGroupKey(node, adsByClientId.get(node.clientId));
+    // Draft groups can produce different creatives when content changes; adopted
+    // Ads without a confirmed creative ID must each resolve their own Post.
+    const key = node.creativeId ? `creative:${node.creativeId}` : `ad:${node.clientId}`;
     const group = groups.get(key) ?? { key, scheduleKey: `publication-group:${key}`, nodes: [] };
     group.nodes.push(node);
     groups.set(key, group);
   }
   return [...groups.values()].filter((group) => group.nodes.some((node) => !hasCompletePublication(node)));
-}
-
-// Ads share a Post only through the same Meta creative. Without a stored creative ID, fall back to the
-// draft's creative group, scoped to the ad account and Page it was published with.
-function publicationGroupKey(node, match) {
-  if (node.creativeId) return `creative:${node.creativeId}`;
-  if (!match) return `ad:${node.clientId}`;
-  const { campaign, ad } = match;
-  return `group:${JSON.stringify([campaign.adAccountId ?? null, campaign.pageId ?? null, ad.creativeGroupId ?? ad.clientId])}`;
-}
-
-function snapshotAds(snapshot) {
-  const ads = new Map();
-  for (const campaign of snapshot?.campaigns ?? []) {
-    for (const adSet of campaign.adSets ?? []) {
-      for (const ad of adSet.ads ?? []) {
-        ads.set(ad.clientId, { campaign, ad });
-      }
-    }
-  }
-  return ads;
 }
 
 function hasCompletePublication(value) {

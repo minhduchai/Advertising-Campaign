@@ -20,9 +20,34 @@ function seedingState(overrides = {}) {
     },
     jobs: overrides.jobs ?? [],
     conflicts: overrides.conflicts ?? [],
-    waitingPostCount: overrides.waitingPostCount ?? 0
+    waitingPostCount: overrides.waitingPostCount ?? 0,
+    waitingCampaignCount: overrides.waitingCampaignCount ?? 0
   };
 }
+
+test('waits for a campaign to finish instead of stopping on an empty initial queue', async () => {
+  let calls = 0;
+  let processed = 0;
+  const waits = [];
+  const waiting = seedingState({ waitingCampaignCount: 1 });
+  assert.equal(shouldAutoResumeSeeding(waiting), true);
+  const runner = createSeedingRunner({
+    api: {
+      async prepareRunSeeding() {
+        return ++calls === 1 ? waiting : seedingState({ summary: { pending: 1 } });
+      },
+      async processNextSeeding() {
+        processed++;
+        return { seeding: seedingState({ summary: { created: 1 } }) };
+      }
+    },
+    wait: async ms => waits.push(ms)
+  });
+  await runner.resume('run-1');
+  assert.equal(calls, 2);
+  assert.equal(processed, 1);
+  assert.deepEqual(waits, [3000]);
+});
 
 test('processes one comment per request and waits for the exact server delay', async () => {
   const waits = [];

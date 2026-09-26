@@ -28,10 +28,10 @@ try {
       completed_at = NULL, available_at = ${Date.now()}, updated_at = ${Date.now()}
     WHERE status = 'failed' AND meta_comment_id IS NULL AND attempt_count < 4
       AND error_json->>'type' = 'TypeError' AND error_json->>'message' = 'fetch failed'`;
-  // Recent terminal runs are enough: completed campaigns are where Post IDs can
-  // arrive late. Job claims remain atomic if a browser is processing too.
+  // Preparation gates each campaign independently; other campaigns may still be creating.
+  // Job claims remain atomic if a browser is processing too.
   const candidates = await sql`SELECT id FROM runs
-    WHERE status IN ('completed', 'completed_with_errors')
+    WHERE status IN ('creating', 'retrying_ad', 'seeding', 'completed', 'completed_with_errors')
       AND created_at >= ${Date.now() - 14 * 86400000}
     ORDER BY created_at DESC LIMIT 20`;
   for (const candidate of candidates) {
