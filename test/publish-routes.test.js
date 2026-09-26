@@ -1054,7 +1054,7 @@ test('retries only one failed Ad while preserving its successful Meta parents', 
   assert.match(workflowPayload.workflowToken, /^[a-f0-9]{48}$/);
 });
 
-test('retries one failed Ad in-process when the workflow service is disabled', async (context) => {
+for (const retryType of ['ad', 'adSet']) test(`retries one failed ${retryType} in-process when the workflow service is disabled`, async (context) => {
   const execution = structuredClone(draft);
   execution.campaigns[0].adSets[0].ads[0].mediaAsset = {
     kind: 'image', accountId: 'act_1', imageHash: 'stored-image-hash', mimeType: 'image/jpeg', name: 'stored.jpg'
@@ -1069,6 +1069,16 @@ test('retries one failed Ad in-process when the workflow service is disabled', a
     ]
   };
   let parentWrites = 0;
+  let adSetWrites = 0;
+  if (retryType === 'adSet') {
+    run.nodes[1] = { ...run.nodes[1], status: 'failed', remoteId: null };
+    run.nodes[2] = { ...run.nodes[2], status: 'skipped' };
+    const adSet = execution.campaigns[0].adSets[0];
+    adSet.ads.push({ ...structuredClone(adSet.ads[0]), clientId: 'ad-2' });
+    run.nodes.push({ ...run.nodes[2], clientId: 'ad-2' });
+    execution.campaigns[0].adSets.push({ ...structuredClone(adSet), clientId: 'adset-other', ads: [] });
+    run.nodes.push({ clientId: 'adset-other', type: 'adSet', status: 'created', remoteId: 'keep-adset' });
+  }
   let creativeWrites = 0;
   let adWrites = 0;
   let released = false;
@@ -1093,7 +1103,7 @@ test('retries one failed Ad in-process when the workflow service is disabled', a
     },
     metaClient: {
       createCampaign: async () => { parentWrites += 1; return 'unexpected-campaign'; },
-      createAdSet: async () => { parentWrites += 1; return 'unexpected-adset'; },
+      createAdSet: async () => { adSetWrites += 1; return 'adset-retry'; },
       uploadImage: async () => { throw new Error('Stored Meta image must be reused'); },
       createCreative: async () => { creativeWrites += 1; return 'creative-retry'; },
       createAd: async () => { adWrites += 1; return 'ad-retry'; },
@@ -1103,7 +1113,8 @@ test('retries one failed Ad in-process when the workflow service is disabled', a
     }
   });
 
-  const response = await request(server, '/api/runs/run-1/ads/ad-1/retry', {
+  const retryPath = retryType === 'adSet' ? 'adsets/adset-1' : 'ads/ad-1';
+  const response = await request(server, `/api/runs/run-1/${retryPath}/retry`, {
     method: 'POST', headers
   });
 
@@ -1112,9 +1123,18 @@ test('retries one failed Ad in-process when the workflow service is disabled', a
   assert.equal(response.body.run.nodes.find((node) => node.clientId === 'ad-1').remoteId, 'ad-retry');
   assert.equal(response.body.run.nodes.find((node) => node.clientId === 'ad-1').postId, 'page_1_123');
   assert.equal(parentWrites, 0);
-  assert.equal(creativeWrites, 1);
-  assert.equal(adWrites, 1);
+  assert.equal(adSetWrites, retryType === 'adSet' ? 1 : 0);
+  assert.ok(creativeWrites >= 1 && creativeWrites <= (retryType === 'adSet' ? 2 : 1));
+  assert.equal(adWrites, retryType === 'adSet' ? 2 : 1);
   assert.equal(released, true);
+  if (retryType === 'adSet') {
+    assert.equal(run.nodes.find(node => node.clientId === 'ad-2').status, 'created');
+    assert.equal(run.nodes.find(node => node.clientId === 'adset-other').remoteId, 'keep-adset');
+    const again = await request(server, `/api/runs/run-1/${retryPath}/retry`, { method: 'POST', headers });
+    assert.equal(again.status, 409);
+    assert.equal(adSetWrites, 1);
+    assert.equal(adWrites, 2);
+  }
 });
 
 test('refreshes missing Post IDs for the connected owner without exposing the token', async (context) => {

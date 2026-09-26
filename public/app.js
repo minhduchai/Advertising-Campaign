@@ -683,7 +683,7 @@ historyWorkspace.addEventListener('click', async (event) => {
     renderHistoryWorkspace({ resetScroll: true });
     return;
   }
-  if (action === 'retry-failed-ad') {
+  if (action === 'retry-failed-ad' || action === 'retry-failed-adset') {
     const clientId = control.dataset.clientId;
     if (!runId || !clientId) return;
     const history = state.activityHistory;
@@ -692,14 +692,16 @@ historyWorkspace.addEventListener('click', async (event) => {
     history.retryingAdKeys = [...(history.retryingAdKeys ?? []), retryKey];
     renderHistoryWorkspace();
     try {
-      const payload = await api.retryFailedAd(runId, clientId);
+      const payload = action === 'retry-failed-adset'
+        ? await api.retryFailedAdSet(runId, clientId)
+        : await api.retryFailedAd(runId, clientId);
       if (payload.run) {
         history.detail = payload.run;
         history.detailsByRun = { ...(history.detailsByRun ?? {}), [runId]: payload.run };
         upsertActivityHistoryRun(payload.run);
       }
       resetHistoryPublicationSync();
-      showToast('Đã bắt đầu thử tạo lại đúng quảng cáo bị lỗi.');
+      showToast(action === 'retry-failed-adset' ? 'Đã thử tạo lại nhóm lỗi và quảng cáo bị bỏ qua trong nhóm.' : 'Đã bắt đầu thử tạo lại đúng quảng cáo bị lỗi.');
       renderHistoryWorkspace();
       scheduleHistoryRealtimeRefresh({ immediate: true });
       if (payload.run && shouldAutoResumeSeeding(payload.run.seeding)) void seedingRunner.resume(runId);

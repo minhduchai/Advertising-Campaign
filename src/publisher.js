@@ -96,6 +96,7 @@ export async function publishDraft({
   };
 
   const publishAll = () => runAll(draft.campaigns, (campaign) => campaignGate(async () => {
+    if (onlyAdClientIds && !campaign.adSets.some(adSet => adSet.ads.some(ad => onlyAdClientIds.has(String(ad.clientId))))) return;
     let campaignResult = terminalNode(nodes, campaign.clientId);
     if (!campaignResult) {
       campaignResult = await claim(() => createNode({
@@ -121,6 +122,7 @@ export async function publishDraft({
     }
 
     await runAll(campaign.adSets, async (adSet) => {
+      if (onlyAdClientIds && !adSet.ads.some(ad => onlyAdClientIds.has(String(ad.clientId)))) return;
       let adSetResult = terminalNode(nodes, adSet.clientId);
       if (!adSetResult) {
         adSetResult = await claim(() => createNode({

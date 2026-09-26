@@ -1532,12 +1532,13 @@ function matchRunWorkflowResumeRoute(pathname) {
 }
 
 function matchRunAdRetryRoute(pathname) {
-  const match = pathname.match(/^\/api\/runs\/([^/]+)\/ads\/([^/]+)\/retry$/);
+  const match = pathname.match(/^\/api\/runs\/([^/]+)\/(ads|adsets)\/([^/]+)\/retry$/);
   if (!match) return null;
   try {
     return {
       runId: decodeURIComponent(match[1]),
-      clientId: decodeURIComponent(match[2])
+      clientId: decodeURIComponent(match[3]),
+      nodeType: match[2] === 'adsets' ? 'adSet' : 'ad'
     };
   } catch {
     return null;
@@ -1553,7 +1554,8 @@ async function handleRunAdRetry({
   mediaStore,
   workflowDispatcher,
   runId,
-  clientId
+  clientId,
+  nodeType = 'ad'
 }) {
   const run = await getOwnedRunOrRespond({ response, session, db, runId, execution: true });
   if (!run) return;
@@ -1562,19 +1564,26 @@ async function handleRunAdRetry({
     return;
   }
   const failedNode = run.nodes.find((node) => (
-    node.type === 'ad'
+    node.type === nodeType
     && String(node.clientId) === String(clientId)
     && node.status === 'failed'
     && !node.remoteId
   ));
-  const target = findExecutionAd(run.execution, clientId);
+  const target = nodeType === 'adSet'
+    ? (run.execution?.campaigns ?? []).flatMap(campaign => (campaign.adSets ?? [])
+      .filter(adSet => String(adSet.clientId) === String(clientId)).map(adSet => ({ campaign, adSet })))[0]
+    : findExecutionAd(run.execution, clientId);
   if (!failedNode || !target) {
     sendJson(response, 409, { error: 'Quảng cáo này không ở trạng thái có thể thử tạo lại' });
     return;
   }
+  if (nodeType === 'adSet' && !run.nodes.some(node => node.type === 'ad' && node.status === 'skipped'
+    && !node.remoteId && target.adSet.ads.some(ad => String(ad.clientId) === String(node.clientId)))) {
+    return sendJson(response, 409, { error: 'Nhóm này không có quảng cáo bị bỏ qua có thể thử lại an toàn' });
+  }
   const campaignNode = run.nodes.find((node) => node.clientId === target.campaign.clientId && node.type === 'campaign');
   const adSetNode = run.nodes.find((node) => node.clientId === target.adSet.clientId && node.type === 'adSet');
-  if (!campaignNode?.remoteId || !adSetNode?.remoteId) {
+  if (!campaignNode?.remoteId || (nodeType === 'ad' && !adSetNode?.remoteId)) {
     sendJson(response, 409, { error: 'Campaign hoặc nhóm quảng cáo chưa được tạo thành công trên Meta' });
     return;
   }
@@ -1594,13 +1603,20 @@ async function handleRunAdRetry({
   const pendingNode = {
     clientId: failedNode.clientId,
     parentClientId: failedNode.parentClientId,
-    type: 'ad',
+    type: nodeType,
     name: failedNode.name,
     status: 'retry_pending',
     error: null
   };
+  const retryNodes = [failedNode, ...(nodeType === 'adSet' ? run.nodes.filter(node =>
+    node.type === 'ad' && node.status === 'skipped' && !node.remoteId
+    && target.adSet.ads.some(ad => String(ad.clientId) === String(node.clientId))) : [])];
+  const previousStatus = run.status;
+  const previousCompletedAt = run.completedAt;
+  let localStarted = false;
   try {
     await db.updateNodeResult(runId, pendingNode);
+    for (const node of retryNodes.slice(1)) await db.updateNodeResult(runId, { ...node, status: 'retry_pending', error: null });
     await db.updateRunStatus(runId, 'retrying_ad', null);
     if (workflowDispatcher.enabled) {
       const dispatched = await workflowDispatcher.dispatch(runId, {
@@ -1618,6 +1634,7 @@ async function handleRunAdRetry({
     }
 
     const token = decryptToken(connection.accessTokenCiphertext, config.tokenEncryptionKey);
+    localStarted = true;
     const updatedRun = await retryRunAdLocally({
       runId,
       ownerMetaUserId: session.metaUserId,
@@ -1632,8 +1649,11 @@ async function handleRunAdRetry({
       run: runResponse(updatedRun, await loadPublicSeedingState(db, session.metaUserId, updatedRun))
     });
   } catch (error) {
-    try { await db.updateNodeResult(runId, failedNode); } catch {}
-    try { await db.updateRunStatus(runId, run.status, run.completedAt ?? Date.now()); } catch {}
+    // Never rewind nodes after a Meta write may have succeeded.
+    if (!localStarted) {
+      for (const node of retryNodes) { try { await db.updateNodeResult(runId, node); } catch {} }
+      try { await db.updateRunStatus(runId, previousStatus, previousCompletedAt ?? Date.now()); } catch {}
+    }
     try { await db.releaseWorkflowLease(runId, workflowToken); } catch {}
     throw error;
   }
@@ -1685,7 +1705,7 @@ async function retryRunAdLocally({ runId, ownerMetaUserId, token, workflowToken,
     metaClient,
     pagePublishingContexts,
     existingNodes: run.nodes,
-    maxNewNodes: 1,
+    maxNewNodes: run.nodes.filter(node => node.status === 'retry_pending').length,
     onlyAdClientIds: new Set(run.nodes
       .filter((node) => node.type === 'ad' && node.status === 'retry_pending')
       .map((node) => String(node.clientId))),
