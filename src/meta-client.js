@@ -29,17 +29,26 @@ const oauthScopes = [
   'business_management'
 ];
 
-export function createMetaClient(config, { fetchImpl = fetch } = {}) {
+export function createMetaClient(config, { fetchImpl = fetch, networkRetryDelay = sleep } = {}) {
   const rawFetch = fetchImpl;
   const rateLimiter = createMetaRateLimiter({ cooldowns: createSharedCooldowns(config.metaReadCacheDirectory) });
   fetchImpl = async (input, options = {}) => {
-    const release = await rateLimiter.acquire(options.signal, input);
-    try {
-      const response = await rawFetch(input, options);
-      await rateLimiter.observe(response, input);
-      return response;
-    } finally {
-      release();
+    for (let attempt = 0; ; attempt++) {
+      const release = await rateLimiter.acquire(options.signal, input);
+      try {
+        const response = await rawFetch(input, options);
+        await rateLimiter.observe(response, input);
+        return response;
+      } catch (error) {
+        const readOnly = ['GET', 'HEAD'].includes(String(options.method ?? 'GET').toUpperCase());
+        const beforeConnect = ['EAI_AGAIN', 'ENOTFOUND', 'ECONNREFUSED', 'UND_ERR_CONNECT_TIMEOUT'].includes(error?.cause?.code);
+        const replayable = !options.body || typeof options.body === 'string' || options.body instanceof URLSearchParams || options.body instanceof FormData;
+        if (options.signal?.aborted || attempt >= 2 || error?.name !== 'TypeError'
+          || error.message !== 'fetch failed' || (!readOnly && !(beforeConnect && replayable))) throw error;
+      } finally {
+        release();
+      }
+      await networkRetryDelay([1000, 3000][attempt], undefined, { signal: options.signal });
     }
   };
   fetchImpl.rateLimiter = rateLimiter;
@@ -433,15 +442,17 @@ export function createMetaClient(config, { fetchImpl = fetch } = {}) {
 
     // Tra đối tượng đã tạo (campaigns/adsets/ads) cùng tên dưới một đối tượng cha, để nhận lại đối tượng mà lần chạy
     // trước tạo dở rồi bị ngắt. Chỉ trả những đối tượng khớp tên chính xác và (nếu có sinceMs) tạo sau mốc đó.
-    async findCreatedObject(token, parentId, edge, name, { sinceMs, signal } = {}) {
+    async findCreatedObject(token, parentId, edge, name, { sinceMs, signal, creativeId } = {}) {
       if (!['campaigns', 'adsets', 'ads'].includes(edge)) throw new Error('Loại đối tượng cần tra không hợp lệ');
       const payload = await requestJson(fetchImpl, `${graphBaseUrl}/${parentId}/${edge}`, {
-        fields: 'id,name,created_time',
+        fields: creativeId ? 'id,name,created_time,creative{id}' : 'id,name,created_time',
         filtering: JSON.stringify([{ field: 'name', operator: 'EQUAL', value: String(name) }]),
         limit: '25'
       }, token, { signal });
+      if (creativeId && payload.paging?.next) throw new Error('Ad reconciliation is incomplete');
       return (payload.data ?? []).filter((item) => (
         item?.name === name
+        && (!creativeId || String(item.creative?.id) === String(creativeId))
         && (!Number.isFinite(sinceMs) || Date.parse(item.created_time) >= sinceMs)
       ));
     },

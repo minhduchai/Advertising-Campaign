@@ -644,7 +644,7 @@ function renderHistoryDiagnostics(run, campaigns, history) {
     const message = node.error?.message ?? node.error?.error?.message ?? (node.status === 'skipped' ? 'Đã bỏ qua do đối tượng trước đó bị lỗi.' : 'Meta không trả về mô tả lỗi.');
     const retryKey = `${String(run.id)}::${String(node.clientId)}`;
     const retrying = (history?.retryingAdKeys ?? []).includes(retryKey);
-    const retryAction = ['ad', 'adSet'].includes(node.type) && node.status === 'failed' && !node.remoteId
+    const retryAction = ['ad', 'adSet'].includes(node.type) && node.status === 'failed' && !node.remoteId && node.error?.type !== 'UncertainAdWriteError'
       ? `<button type="button" class="button-secondary history-retry-ad" data-action="retry-failed-${node.type === 'adSet' ? 'adset' : 'ad'}" data-run-id="${escapeHtml(run.id)}" data-client-id="${escapeHtml(node.clientId)}"${retrying ? ' disabled' : ''}>${retrying ? 'Đang thử lại...' : node.type === 'adSet' ? 'Thử tạo lại nhóm quảng cáo' : 'Thử tạo lại quảng cáo'}</button>`
       : '';
     return `<article class="history-diagnostic-item is-${escapeHtml(node.status)}"><div><span>${escapeHtml(labels[node.type] ?? node.type)}</span><strong>${escapeHtml(node.name ?? 'Chưa đặt tên')}</strong></div><dl><div><dt>ID cục bộ</dt><dd>${escapeHtml(node.clientId)}</dd></div>${node.remoteId ? `<div><dt>ID Meta</dt><dd>${escapeHtml(node.remoteId)}</dd></div>` : ''}</dl><p>${escapeHtml(message)}</p>${retryAction}</article>`;

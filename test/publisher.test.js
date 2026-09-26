@@ -25,6 +25,32 @@ const ad = {
   }
 };
 
+for (const matchCount of [0, 1, 2]) test(`uncertain Ad writes reconcile without reposting: ${matchCount} matches`, async () => {
+  let writes = 0;
+  let lookups = 0;
+  const result = await publishDraft({
+    draft: structuredClone(draft), token: 'token', runId: 'reconcile', delay: async () => {},
+    getMedia: async () => ({ mimeType: 'image/jpeg', metaImageHash: 'hash' }),
+    metaClient: {
+      createCampaign: async () => 'campaign', createAdSet: async () => 'adset',
+      uploadImage: async () => 'hash', createCreative: async () => 'creative',
+      createAd: async () => { writes++; throw new TypeError('fetch failed'); },
+      findCreatedObject: async (_token, parent, edge, _name, options) => {
+        lookups++;
+        assert.equal(parent, 'adset');
+        assert.equal(edge, 'ads');
+        assert.equal(options.creativeId, 'creative');
+        return Array.from({ length: matchCount }, (_, i) => ({ id: `existing-${i}` }));
+      }
+    }
+  });
+  assert.equal(writes, 1);
+  assert.equal(lookups, matchCount === 0 ? 2 : 1);
+  const node = result.nodes.find(node => node.type === 'ad');
+  assert.equal(node.status, matchCount === 1 ? 'created' : 'failed');
+  if (matchCount === 1) assert.equal(node.remoteId, 'existing-0');
+});
+
 test('uses a direct Meta image asset without uploading media again', async () => {
   const directDraft = structuredClone(draft);
   directDraft.campaigns[0].adSets[0].ads[0].mediaAsset = {

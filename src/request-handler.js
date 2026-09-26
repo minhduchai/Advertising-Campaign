@@ -1568,6 +1568,7 @@ async function handleRunAdRetry({
     && String(node.clientId) === String(clientId)
     && node.status === 'failed'
     && !node.remoteId
+    && node.error?.type !== 'UncertainAdWriteError'
   ));
   const target = nodeType === 'adSet'
     ? (run.execution?.campaigns ?? []).flatMap(campaign => (campaign.adSets ?? [])

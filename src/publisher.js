@@ -153,6 +153,7 @@ export async function publishDraft({
         if (terminalNode(nodes, ad.clientId)) return;
         const lookupPublication = await claim(() => createAd({
           ad,
+          canReconcile: adSet.ads.filter(entry => entry.name === ad.name).length === 1,
           adSetId: adSetResult.remoteId,
           parentClientId: adSet.clientId,
           accountId: campaign.adAccountId,
@@ -281,7 +282,8 @@ async function createAd({
   getMetaVideoId,
   saveMetaVideoId,
   deleteMetaVideoId,
-  adopt = async () => null
+  adopt = async () => null,
+  canReconcile = false
 }) {
   assertPublicationDeadline(deadlineContext);
   await report({ clientId: ad.clientId, parentClientId, type: 'ad', name: ad.name, status: 'creating' });
@@ -313,12 +315,33 @@ async function createAd({
       deleteMetaVideoId
     });
     assertPublicationDeadline(deadlineContext);
-    const remoteId = await metaClient.createAd(
-      token,
-      accountId,
-      buildAdParams(adSetId, artifact.creativeId, ad),
-      publicationOptions(deadlineContext)
-    );
+    const writeStartedAt = Math.floor(deadlineContext.now() / 1000) * 1000;
+    let remoteId;
+    try {
+      remoteId = await metaClient.createAd(
+        token, accountId, buildAdParams(adSetId, artifact.creativeId, ad), publicationOptions(deadlineContext)
+      );
+    } catch (error) {
+      if (error?.name !== 'TypeError' || error.message !== 'fetch failed') throw error;
+      // A missing read result cannot prove the write failed. Only adopt an exact, unique match.
+      try {
+        if (!canReconcile || !metaClient.findCreatedObject) throw error;
+        for (const waitMs of [1000, 3000]) {
+          await delay(waitMs);
+          assertPublicationDeadline(deadlineContext);
+          const matches = await metaClient.findCreatedObject(token, adSetId, 'ads', ad.name, {
+            sinceMs: writeStartedAt, creativeId: artifact.creativeId, ...publicationOptions(deadlineContext)
+          });
+          if (matches.length > 1) break;
+          if (matches.length === 1 && matches[0].id) { remoteId = String(matches[0].id); break; }
+        }
+      } catch { /* A failed reconciliation must not trigger a fresh write via throttle retry. */ }
+      if (!remoteId) {
+        const uncertain = new Error('Mất phản hồi tạo quảng cáo; cần kiểm tra trên Meta trước khi thử lại để tránh trùng.');
+        uncertain.name = 'UncertainAdWriteError';
+        throw uncertain;
+      }
+    }
     artifact.successfulAds += 1;
     const createdNode = {
       clientId: ad.clientId,
