@@ -27,11 +27,11 @@ export function createMetaRequestCache({ now = Date.now, maxEntries = DEFAULT_MA
     const request = Promise.resolve()
       .then(loader)
       .then((value) => {
-        entries.set(key, { value, expiresAt: now() + ttlMs });
+        if (pending.get(key) === request) entries.set(key, { value, expiresAt: now() + ttlMs });
         prune();
         return value;
       })
-      .finally(() => pending.delete(key));
+      .finally(() => { if (pending.get(key) === request) pending.delete(key); });
     pending.set(key, request);
     return request;
   }

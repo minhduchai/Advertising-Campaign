@@ -336,8 +336,10 @@ test('keeps the shared Page catalog outside account-specific resources', () => {
   state.resources.pages = [{ id: 'page-1', name: 'LG Clinic', canAdvertise: true }];
   state.resources.pageDiscovery = { loaded: true, counts: { total: 1 } };
   const accountResources = setAccountResources(state, 'act_1', {
-    loaded: true
+    loaded: true,
+    loadedAt: 12345
   });
+  assert.equal(accountResources.loadedAt, 12345);
 
   assert.deepEqual(state.resources.pages, [{ id: 'page-1', name: 'LG Clinic', canAdvertise: true }]);
   assert.deepEqual(state.resources.pageDiscovery, { loaded: true, counts: { total: 1 } });

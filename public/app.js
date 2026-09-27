@@ -2445,14 +2445,14 @@ async function ensureAccountResourcesForNode(clientId) {
   const campaign = findNode(state, clientId)?.campaign ?? activeCampaign(state);
   if (!campaign?.adAccountId) return null;
   const cached = state.resources.accountResourcesById?.[campaign.adAccountId];
-  if (cached?.loaded) return cached;
+  if (cached?.loaded && Date.now() - cached.loadedAt < 60_000) return cached;
   return loadAdAccountResources(campaign.adAccountId);
 }
 
 async function loadAdAccountResources(requestedAccountId = activeCampaign(state)?.adAccountId) {
   if (!requestedAccountId) return null;
   const cached = state.resources.accountResourcesById?.[requestedAccountId];
-  if (cached?.loaded) return cached;
+  if (cached?.loaded && Date.now() - cached.loadedAt < 60_000) return cached;
   const request = accountResourceRequests.begin(requestedAccountId);
   const previousResources = state.resources.accountResourcesById?.[requestedAccountId];
   state.ui.loadingAccountResources = true;
@@ -2466,6 +2466,7 @@ async function loadAdAccountResources(requestedAccountId = activeCampaign(state)
           ?? previousResources;
         return setAccountResources(state, requestedAccountId, {
           loaded: true,
+          loadedAt: Date.now(),
           customAudiences: payload.customAudiences ?? [],
           savedAudiences: payload.savedAudiences ?? [],
           promotablePageIds: payload.promotablePageIds ?? [],

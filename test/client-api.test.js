@@ -2,6 +2,63 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createApiClient } from '../public/api.js';
 
+test('browser cache expires, rejects legacy entries and shares concurrent reads', async () => {
+  const entries = new Map();
+  const storage = {
+    getItem: key => entries.get(key) ?? null,
+    setItem: (key, value) => entries.set(key, value),
+    removeItem: key => entries.delete(key),
+    key: index => [...entries.keys()][index],
+    get length() { return entries.size; }
+  };
+  let now = 1000;
+  let calls = 0;
+  const api = createApiClient(async () => Response.json({ calls: ++calls }), { storage, now: () => now });
+  entries.set('meta-campaign-builder:api-cache:v1:/api/audience-templates', JSON.stringify({ legacy: true }));
+  assert.deepEqual(await Promise.all([api.loadAudienceTemplates(), api.loadAudienceTemplates()]), [{ calls: 1 }, { calls: 1 }]);
+  assert.deepEqual(await api.loadAudienceTemplates(), { calls: 1 });
+  now += 60_000;
+  assert.deepEqual(await api.loadAudienceTemplates(), { calls: 2 });
+});
+
+test('cleared browser cache cannot be repopulated by an older in-flight read', async () => {
+  let finishOld;
+  let calls = 0;
+  const entries = new Map();
+  const storage = {
+    getItem: key => entries.get(key) ?? null,
+    setItem: (key, value) => entries.set(key, value),
+    removeItem: key => entries.delete(key),
+    key: index => [...entries.keys()][index],
+    get length() { return entries.size; }
+  };
+  const api = createApiClient(async () => {
+    if (++calls === 1) return new Promise(resolve => { finishOld = resolve; });
+    return Response.json({ fresh: true });
+  }, { storage });
+  const old = api.loadAudienceTemplates();
+  api.clearCache();
+  await api.loadAudienceTemplates();
+  finishOld(Response.json({ stale: true }));
+  await old;
+  assert.deepEqual(await api.loadAudienceTemplates(), { fresh: true });
+  assert.equal(calls, 2);
+});
+
+test('failed shared reads can retry and mutations are never coalesced', async () => {
+  let calls = 0;
+  const api = createApiClient(async () => {
+    calls++;
+    return Response.json({}, { status: calls === 1 ? 500 : 200 });
+  }, { storage: null });
+  const failed = await Promise.allSettled([api.loadRun('r'), api.loadRun('r')]);
+  assert.ok(failed.every(result => result.status === 'rejected'));
+  assert.equal(calls, 1);
+  await api.loadRun('r');
+  await Promise.all([api.processNextSeeding('r'), api.processNextSeeding('r')]);
+  assert.equal(calls, 4);
+});
+
 test('encodes targeting queries and normalizes server errors', async () => {
   const requests = [];
   const api = createApiClient(async (url) => {

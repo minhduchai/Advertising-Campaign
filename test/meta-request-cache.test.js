@@ -2,6 +2,24 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMetaRequestCache } from '../src/meta-request-cache.js';
 
+test('invalidated in-flight reads cannot overwrite or remove their replacement', async () => {
+  const cache = createMetaRequestCache();
+  let finishOld;
+  let finishNew;
+  const old = cache.load('user:1:x', 1000, () => new Promise(resolve => { finishOld = resolve; }));
+  await Promise.resolve();
+  cache.invalidatePrefix('user:1:');
+  const fresh = cache.load('user:1:x', 1000, () => new Promise(resolve => { finishNew = resolve; }));
+  await Promise.resolve();
+  finishOld('old');
+  await old;
+  assert.equal(cache.peek('user:1:x'), undefined);
+  const shared = cache.load('user:1:x', 1000, () => assert.fail('duplicate request'));
+  finishNew('new');
+  assert.deepEqual(await Promise.all([fresh, shared]), ['new', 'new']);
+  assert.equal(cache.peek('user:1:x'), 'new');
+});
+
 test('caches successful Meta responses until TTL expires', async () => {
   let currentTime = 1_000;
   let calls = 0;

@@ -659,6 +659,7 @@ export function setAccountResources(state, accountId, resources) {
   state.resources.accountResourcesById ??= {};
   const next = {
     loaded: resources?.loaded ?? false,
+    loadedAt: resources?.loadedAt ?? 0,
     customAudiences: resources?.customAudiences ?? [],
     savedAudiences: resources?.savedAudiences ?? [],
     // The account's promote_pages; the Page picker only warns, since Meta can omit Business Portfolio Pages.

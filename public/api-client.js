@@ -1,4 +1,4 @@
-// Tài nguyên chỉ tải lại khi người dùng bấm "Làm mới dữ liệu" hoặc khi tool tự sửa (CRUD) đúng loại đó.
+// Persistent entries expire; concurrent reads share only their in-flight request.
 const CACHED_GET_PREFIXES = [
   '/api/ad-account-resources',
   '/api/audience-templates',
@@ -8,11 +8,24 @@ const CACHED_GET_PREFIXES = [
 ];
 const API_CACHE_PREFIX = 'meta-campaign-builder:api-cache:v1:'; // tăng v khi đổi cấu trúc payload
 
-export function createApiClient(fetchImpl = fetch, { storage = globalThis.localStorage } = {}) {
+export function createApiClient(fetchImpl = fetch, { storage = globalThis.localStorage, now = Date.now } = {}) {
+  const pending = new Map();
+  let generation = 0;
   const cachedPrefix = (url) => CACHED_GET_PREFIXES.find((prefix) => url === prefix || url.startsWith(`${prefix}?`) || url.startsWith(`${prefix}/`));
-  const cacheRead = (url) => { try { return JSON.parse(storage?.getItem(API_CACHE_PREFIX + url)); } catch { return null; } };
-  const cacheWrite = (url, payload) => { try { storage?.setItem(API_CACHE_PREFIX + url, JSON.stringify(payload)); } catch {} };
+  const cacheRead = (url) => {
+    try {
+      const entry = JSON.parse(storage?.getItem(API_CACHE_PREFIX + url));
+      if (Number.isFinite(entry?.expiresAt) && entry.expiresAt > now()) return entry.payload;
+      storage?.removeItem(API_CACHE_PREFIX + url);
+    } catch {}
+    return null;
+  };
+  const cacheWrite = (url, payload) => {
+    try { storage?.setItem(API_CACHE_PREFIX + url, JSON.stringify({ payload, expiresAt: now() + 60_000 })); } catch {}
+  };
   const cacheDrop = (prefix = '') => {
+    generation++;
+    pending.clear();
     try {
       const keys = [];
       for (let index = 0; index < (storage?.length ?? 0); index += 1) keys.push(storage.key(index));
@@ -33,16 +46,24 @@ export function createApiClient(fetchImpl = fetch, { storage = globalThis.localS
       const cached = cacheRead(url);
       if (cached) return cached;
     }
-    const response = await fetchImpl(url, { ...options, cache: 'no-store', credentials: 'same-origin' });
-    const payload = await readJson(response);
-    if (!response.ok) {
-      throw requestError(response.status, payload);
+    if (isGet && pending.has(url)) return pending.get(url);
+    const requestGeneration = generation;
+    const request = sendJson();
+    if (isGet) pending.set(url, request);
+    try { return await request; }
+    finally { if (pending.get(url) === request) pending.delete(url); }
+
+    async function sendJson() {
+      const response = await fetchImpl(url, { ...options, cache: 'no-store', credentials: 'same-origin' });
+      const payload = await readJson(response);
+      if (!response.ok) throw requestError(response.status, payload);
+      if (prefix) {
+        if (isGet) {
+          if (generation === requestGeneration) cacheWrite(url, payload);
+        } else cacheDrop(prefix);
+      }
+      return payload;
     }
-    if (prefix) {
-      if (isGet) cacheWrite(url, payload);
-      else cacheDrop(prefix);
-    }
-    return payload;
   }
 
   return {

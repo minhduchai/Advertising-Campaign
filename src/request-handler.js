@@ -629,18 +629,16 @@ async function handleResourceDiscovery({ response, session, db, config, metaClie
   }
 
   const token = decryptToken(connection.accessTokenCiphertext, config.tokenEncryptionKey);
-  const { adAccounts, pageCatalog, permissions } = await metaRequestCache.load(
-    `user:${session.metaUserId}:resources`,
-    META_RESOURCE_TTL_MS,
-    async () => {
-      const [adAccounts, pageCatalog, permissions] = await Promise.all([
+  const [{ adAccounts, pageCatalog }, permissions] = await Promise.all([
+    metaRequestCache.load(`user:${session.metaUserId}:resources`, META_RESOURCE_TTL_MS, async () => {
+      const [adAccounts, pageCatalog] = await Promise.all([
         metaClient.listAdAccounts(token),
-        metaClient.listGlobalPageCatalog(token),
-        metaClient.getPermissionStatus(token, ['pages_manage_engagement'])
+        metaClient.listGlobalPageCatalog(token)
       ]);
-      return { adAccounts, pageCatalog, permissions };
-    }
-  );
+      return { adAccounts, pageCatalog };
+    }),
+    metaClient.getPermissionStatus(token, ['pages_manage_engagement'])
+  ]);
   sendJson(response, 200, {
     connected: true,
     metaUser: {
@@ -795,12 +793,9 @@ function normalizeMetaSearchQuery(query) {
   return String(query).normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('vi');
 }
 
-function cachedPageEngagementContext(cache, metaUserId, metaClient) {
-  return (token, pageId) => cache.load(
-    `user:${metaUserId}:page-engagement:${pageId}`,
-    META_ACCOUNT_RESOURCE_TTL_MS,
-    () => metaClient.getPageEngagementContext(token, [pageId])
-  );
+function pageEngagementContext(metaClient) {
+  // The Meta client already shares token-scoped reads with a five-minute TTL.
+  return (token, pageId) => metaClient.getPageEngagementContext(token, [pageId]);
 }
 
 export async function processWorkflowSeedingBatch({ batchSize, processNext, wait = workflowWait }) {
@@ -1869,7 +1864,7 @@ async function handleRunSeedingRoute({
       metaClient,
       mediaStore,
       token: decryptToken(connection.accessTokenCiphertext, config.tokenEncryptionKey),
-      loadPageEngagementContext: cachedPageEngagementContext(metaRequestCache, session.metaUserId, metaClient)
+      loadPageEngagementContext: pageEngagementContext(metaClient)
     });
     const seeding = await loadPublicSeedingState(db, session.metaUserId, run);
     sendJson(response, 200, {
@@ -2279,7 +2274,7 @@ async function handleInternalWorkflowRoute({ request, response, url, config, db,
         metaClient,
         mediaStore,
         token,
-        loadPageEngagementContext: cachedPageEngagementContext(metaRequestCache, run.ownerMetaUserId, metaClient)
+        loadPageEngagementContext: pageEngagementContext(metaClient)
       })
     });
     return sendJson(response, 200, {
@@ -2291,7 +2286,7 @@ async function handleInternalWorkflowRoute({ request, response, url, config, db,
   }
 
   const reconciliation = await reconcileWorkflowSeeding({ run, db, token, metaClient, mediaStore,
-    loadPageEngagementContext: cachedPageEngagementContext(metaRequestCache, run.ownerMetaUserId, metaClient) });
+    loadPageEngagementContext: pageEngagementContext(metaClient) });
   if (reconciliation.pending || reconciliation.needsReview) {
     await db.updateRunStatus(runId, 'seeding', null);
     return sendJson(response, 200, { status: reconciliation.needsReview ? 'needs_review' : 'seeding',

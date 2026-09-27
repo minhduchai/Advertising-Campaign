@@ -118,7 +118,7 @@ test('loads connection state and the shared Page catalog without returning the M
       },
       getPermissionStatus: async (token) => {
         calls.push({ type: 'permissions', token });
-        return { pages_manage_engagement: true };
+        return { pages_manage_engagement: calls.filter(call => call.type === 'permissions').length === 1 };
       }
     }
   });
@@ -151,6 +151,13 @@ test('loads connection state and the shared Page catalog without returning the M
   assert.deepEqual(calls.map(({ type }) => type).sort(), ['ad-accounts', 'global-pages', 'permissions']);
   assert.doesNotMatch(JSON.stringify(response.body), /EAAG-secret-token/);
   assert.doesNotMatch(JSON.stringify(response.body), /tasks/);
+  const refreshed = await request(server, '/api/resources', {
+    headers: { cookie: `meta_ads_session=${encodeURIComponent(session)}` }
+  });
+  assert.equal(refreshed.body.capabilities.pagesManageEngagement, false);
+  assert.equal(calls.filter(call => call.type === 'ad-accounts').length, 1);
+  assert.equal(calls.filter(call => call.type === 'global-pages').length, 1);
+  assert.equal(calls.filter(call => call.type === 'permissions').length, 2);
 });
 
 test('returns account-scoped audiences without scanning Business Pages', async (context) => {
