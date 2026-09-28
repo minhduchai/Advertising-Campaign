@@ -83,7 +83,9 @@ export async function publishDraft({
     newNodes += 1;
     return create();
   });
+  let persistenceError;
   const report = async (node) => {
+    if (persistenceError) throw persistenceError;
     const existingIndex = nodes.findIndex((entry) => entry.clientId === node.clientId);
     if (node.status === 'created' && nodes[existingIndex]?.error) node = { ...node, error: null };
     if (existingIndex >= 0) {
@@ -91,7 +93,8 @@ export async function publishDraft({
     } else {
       nodes.push(node);
     }
-    await onNodeUpdate(runId, node);
+    try { await onNodeUpdate(runId, node); }
+    catch (error) { persistenceError = error; throw error; }
     return node;
   };
 
@@ -185,8 +188,10 @@ export async function publishDraft({
     while (true) {
       try {
         await publishAll();
+        if (persistenceError) throw persistenceError;
         break;
       } catch (error) {
+        if (persistenceError) throw persistenceError;
         if (!waitForThrottle || !isMetaThrottleError(error)) throw error;
         // runAll has drained in-flight writes. Keep successful nodes/artifacts and retry only
         // definite throttle rejections after the requested cooldown, never uncertain writes.
@@ -247,17 +252,26 @@ async function adoptInterruptedNode({
 }) {
   const key = String(clientId);
   if (!interruptedClientIds.has(key)) return null;
-  interruptedClientIds.delete(key);
-  if (!Number.isFinite(runStartedAt) || typeof metaClient.findCreatedObject !== 'function') return null;
+  // Keep uncertain Ads marked across quota retries; a second pass must not POST blindly.
+  if (edge !== 'ads') interruptedClientIds.delete(key);
+  const unresolved = () => {
+    if (edge === 'ads') {
+      const error = new Error('Không xác định được quảng cáo sau khi lượt chạy bị ngắt; hãy kiểm tra trên Meta trước khi thử lại.');
+      error.name = 'UncertainAdWriteError';
+      throw error;
+    }
+    return null;
+  };
+  if (!Number.isFinite(runStartedAt) || typeof metaClient.findCreatedObject !== 'function') return unresolved();
   try {
     const matches = await metaClient.findCreatedObject(token, parentId, edge, name, {
       sinceMs: runStartedAt - 60_000,
       ...publicationOptions(deadlineContext)
     });
-    return matches.length === 1 && matches[0]?.id ? String(matches[0].id) : null;
+    return matches.length === 1 && matches[0]?.id ? String(matches[0].id) : unresolved();
   } catch (error) {
     if (publicationDeadlineError(error, deadlineContext) || isMetaThrottleError(error)) throw error;
-    return null;
+    return unresolved();
   }
 }
 
@@ -323,6 +337,7 @@ async function createAd({
       );
     } catch (error) {
       if (error?.name !== 'TypeError' || error.message !== 'fetch failed') throw error;
+      let reconciliation = 'unavailable';
       // A missing read result cannot prove the write failed. Only adopt an exact, unique match.
       try {
         if (!canReconcile || !metaClient.findCreatedObject) throw error;
@@ -332,13 +347,20 @@ async function createAd({
           const matches = await metaClient.findCreatedObject(token, adSetId, 'ads', ad.name, {
             sinceMs: writeStartedAt, creativeId: artifact.creativeId, ...publicationOptions(deadlineContext)
           });
+          reconciliation = matches.length > 1 ? 'ambiguous' : matches.length === 1 ? 'matched' : 'not_found';
           if (matches.length > 1) break;
           if (matches.length === 1 && matches[0].id) { remoteId = String(matches[0].id); break; }
         }
-      } catch { /* A failed reconciliation must not trigger a fresh write via throttle retry. */ }
+      } catch { reconciliation = 'lookup_failed'; }
       if (!remoteId) {
         const uncertain = new Error('Mất phản hồi tạo quảng cáo; cần kiểm tra trên Meta trước khi thử lại để tránh trùng.');
         uncertain.name = 'UncertainAdWriteError';
+        uncertain.reconciliation = reconciliation;
+        const networkCode = error.cause?.code;
+        if (['ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN', 'ENOTFOUND', 'ETIMEDOUT',
+          'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET'].includes(networkCode)) {
+          uncertain.networkCode = networkCode;
+        }
         throw uncertain;
       }
     }
@@ -943,7 +965,11 @@ function normalizeError(error) {
     type: error.name ?? 'Error',
     code: null,
     subcode: null,
-    fbtraceId: null
+    fbtraceId: null,
+    ...(error.name === 'UncertainAdWriteError' ? {
+      ...(error.networkCode ? { networkCode: error.networkCode } : {}),
+      ...(error.reconciliation ? { reconciliation: error.reconciliation } : {})
+    } : {})
   };
 }
 

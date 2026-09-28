@@ -25,7 +25,7 @@ const ad = {
   }
 };
 
-for (const matchCount of [0, 1, 2]) test(`uncertain Ad writes reconcile without reposting: ${matchCount} matches`, async () => {
+for (const matchCount of [0, 1, 2, -1]) test(`uncertain Ad writes reconcile without reposting: ${matchCount} matches`, async () => {
   let writes = 0;
   let lookups = 0;
   const result = await publishDraft({
@@ -34,9 +34,10 @@ for (const matchCount of [0, 1, 2]) test(`uncertain Ad writes reconcile without 
     metaClient: {
       createCampaign: async () => 'campaign', createAdSet: async () => 'adset',
       uploadImage: async () => 'hash', createCreative: async () => 'creative',
-      createAd: async () => { writes++; throw new TypeError('fetch failed'); },
+      createAd: async () => { writes++; throw new TypeError('fetch failed', { cause: { code: 'ECONNRESET', message: 'Bearer private-token' } }); },
       findCreatedObject: async (_token, parent, edge, _name, options) => {
         lookups++;
+        if (matchCount === -1) throw new Error('Lookup unavailable');
         assert.equal(parent, 'adset');
         assert.equal(edge, 'ads');
         assert.equal(options.creativeId, 'creative');
@@ -49,6 +50,12 @@ for (const matchCount of [0, 1, 2]) test(`uncertain Ad writes reconcile without 
   const node = result.nodes.find(node => node.type === 'ad');
   assert.equal(node.status, matchCount === 1 ? 'created' : 'failed');
   if (matchCount === 1) assert.equal(node.remoteId, 'existing-0');
+  else {
+    assert.equal(node.creativeId, 'creative');
+    assert.equal(node.error.networkCode, 'ECONNRESET');
+    assert.equal(node.error.reconciliation, matchCount === -1 ? 'lookup_failed' : matchCount === 0 ? 'not_found' : 'ambiguous');
+    assert.doesNotMatch(JSON.stringify(node), /private-token/);
+  }
 });
 
 test('uses a direct Meta image asset without uploading media again', async () => {

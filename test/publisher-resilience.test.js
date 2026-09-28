@@ -167,7 +167,7 @@ test('a released retry_pending ad is created on the next call without recreating
   assert.equal(result.complete, true);
 });
 
-function adoptionHarness({ matches, existingStatus = 'creating', runStartedAt = 1_000_000 }) {
+function adoptionHarness({ matches, existingStatus = 'creating', runStartedAt = 1_000_000, lookupError }) {
   const calls = [];
   const lookups = [];
   return {
@@ -183,6 +183,8 @@ function adoptionHarness({ matches, existingStatus = 'creating', runStartedAt = 
         { clientId: 'ad-1', parentClientId: 'adset-1', type: 'ad', name: 'Ad 1', status: existingStatus }
       ],
       runStartedAt,
+      waitForThrottle: true,
+      delay: async () => {},
       getMedia: image,
       metaClient: {
         uploadImage: async () => 'image-hash',
@@ -190,12 +192,22 @@ function adoptionHarness({ matches, existingStatus = 'creating', runStartedAt = 
         createAd: async () => { calls.push('ad'); return 'remote-ad-new'; },
         findCreatedObject: async (_token, parentId, edge, name, options) => {
           lookups.push({ parentId, edge, name, sinceMs: options.sinceMs });
+          if (lookupError && lookups.length === 1) throw lookupError;
           return matches;
         },
         getAdPublication: async () => ({})
       }
     })
   };
+}
+
+for (const lookupError of [new Error('lookup offline'), Object.assign(new Error('quota'), { name: 'MetaThrottleError', retryAfterMs: 1 })]) {
+  test(`interrupted Ad remains uncertain after lookup ${lookupError.name}`, async () => {
+    const harness = adoptionHarness({ matches: [], lookupError });
+    const result = await harness.run();
+    assert.deepEqual(harness.calls, []);
+    assert.equal(result.nodes.find(node => node.type === 'ad').error.type, 'UncertainAdWriteError');
+  });
 }
 
 test('adopts an ad that Meta already created before the interruption instead of creating a duplicate', async () => {
@@ -209,12 +221,12 @@ test('adopts an ad that Meta already created before the interruption instead of 
   assert.equal(adNode.remoteId, 'remote-ad-existing');
 });
 
-test('does not adopt when the match is ambiguous or absent, and creates the ad as before', async () => {
+test('interrupted Ads with ambiguous or absent matches require manual confirmation, never a new write', async () => {
   for (const matches of [[], [{ id: 'a' }, { id: 'b' }]]) {
     const harness = adoptionHarness({ matches });
     const result = await harness.run();
-    assert.deepEqual(harness.calls, ['creative', 'ad']);
-    assert.equal(result.nodes.find((node) => node.clientId === 'ad-1').remoteId, 'remote-ad-new');
+    assert.deepEqual(harness.calls, []);
+    assert.equal(result.nodes.find((node) => node.clientId === 'ad-1').error.type, 'UncertainAdWriteError');
   }
 });
 
@@ -226,8 +238,25 @@ test('only nodes interrupted while creating are looked up on Meta, and never wit
   const withoutStart = adoptionHarness({ matches: [{ id: 'x' }], runStartedAt: null });
   await withoutStart.run();
   assert.equal(withoutStart.lookups.length, 0);
-  assert.deepEqual(withoutStart.calls, ['creative', 'ad']);
+  assert.deepEqual(withoutStart.calls, []);
 });
+
+for (const failType of ['campaign', 'adSet', 'ad']) {
+  test(`database failure persisting a created ${failType} must not overwrite it as failed`, async () => {
+    const updates = [];
+    await assert.rejects(publishDraft({ draft, token: 'fake', runId: 'db-failure', getMedia: image,
+      metaClient: {
+        createCampaign: async () => 'campaign-id', createAdSet: async () => 'adset-id',
+        uploadImage: async () => 'hash', createCreative: async () => 'creative-id', createAd: async () => 'ad-id'
+      },
+      onNodeUpdate: async (_run, node) => {
+        updates.push(node);
+        if (node.type === failType && node.status === 'created') throw new Error('database unavailable');
+      }
+    }), /database unavailable/);
+    assert.equal(updates.filter(node => node.type === failType && node.status === 'failed').length, 0);
+  });
+}
 
 test('a failing lookup falls back to creating the object rather than stopping the run', async () => {
   const calls = [];

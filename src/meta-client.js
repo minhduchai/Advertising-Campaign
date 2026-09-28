@@ -414,6 +414,11 @@ export function createMetaClient(config, { fetchImpl = fetch, networkRetryDelay 
 
     async createAd(token, accountId, params, options = {}) {
       const payload = await postParams(fetchImpl, `${graphBaseUrl}/${accountId}/ads`, token, params, options);
+      if (!payload?.id) {
+        const error = new Error('Meta trả về phản hồi nhưng thiếu Ad ID; hãy kiểm tra trên Meta trước khi thử tạo lại.');
+        error.name = 'UncertainAdWriteError';
+        throw error;
+      }
       return payload.id;
     },
 
