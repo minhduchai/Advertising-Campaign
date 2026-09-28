@@ -412,6 +412,7 @@ async function createAd({
       type: 'ad',
       name: ad.name,
       status: 'failed',
+      ...(artifact?.creativeId ? { creativeId: artifact.creativeId } : {}),
       ...((artifact?.postId || error.postId) ? { postId: artifact?.postId ?? error.postId } : {}),
       error: normalizedError
     };

@@ -717,6 +717,11 @@ test('offers an inline retry action only for a failed Ad without a Meta ID', () 
   assert.match(html, /data-client-id="ad-1"/);
   assert.match(html, /Đang thử lại\.\.\.<\/button>/);
   assert.match(html, /disabled/);
+  history.detail.nodes[2].error.type = 'UncertainAdWriteError';
+  const uncertainHtml = renderActivityHistory(history);
+  assert.match(uncertainHtml, /data-action="resolve-ad-existing"/);
+  assert.match(uncertainHtml, /data-action="resolve-ad-missing"/);
+  assert.doesNotMatch(uncertainHtml, /data-action="retry-failed-ad"/);
   history.detail.nodes[1] = { ...history.detail.nodes[1], status: 'failed', remoteId: null };
   history.detail.nodes[2].status = 'skipped';
   const groupHtml = renderActivityHistory(history);

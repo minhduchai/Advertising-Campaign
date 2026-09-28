@@ -405,6 +405,13 @@ export function createMetaClient(config, { fetchImpl = fetch, networkRetryDelay 
       return payload.id;
     },
 
+    async getAdIdentity(token, adId) {
+      if (!/^\d+$/.test(String(adId))) throw new Error('Invalid Ad ID');
+      return requestJson(fetchImpl, `${graphBaseUrl}/${adId}`, {
+        fields: 'id,name,account_id,campaign_id,adset_id,creative{id}'
+      }, token, { signal: AbortSignal.timeout(15000) });
+    },
+
     async createAd(token, accountId, params, options = {}) {
       const payload = await postParams(fetchImpl, `${graphBaseUrl}/${accountId}/ads`, token, params, options);
       return payload.id;

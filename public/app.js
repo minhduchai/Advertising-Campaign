@@ -683,25 +683,36 @@ historyWorkspace.addEventListener('click', async (event) => {
     renderHistoryWorkspace({ resetScroll: true });
     return;
   }
-  if (action === 'retry-failed-ad' || action === 'retry-failed-adset') {
+  if (['retry-failed-ad', 'retry-failed-adset', 'resolve-ad-existing', 'resolve-ad-missing'].includes(action)) {
+    event.preventDefault();
     const clientId = control.dataset.clientId;
     if (!runId || !clientId) return;
     const history = state.activityHistory;
     const retryKey = `${runId}::${clientId}`;
     if ((history.retryingAdKeys ?? []).includes(retryKey)) return;
+    let confirmation = {};
+    if (action === 'resolve-ad-existing') {
+      const adId = control.closest('.history-diagnostic-item')?.querySelector('[data-existing-ad-id]')?.value ?? '';
+      if (!/^\d{1,40}$/.test(adId.trim())) { showToast('Ad ID phải là dãy số.'); return; }
+      if (!await confirmAction({ title: 'Nhận lại quảng cáo đã có', message: 'Server sẽ kiểm tra Ad ID này và nhận lại kết quả nếu khớp, không tạo quảng cáo mới.', confirmLabel: 'Kiểm tra và nhận lại' })) return;
+      confirmation = { resolution: 'existing', confirmed: true, adId: adId.trim() };
+    } else if (action === 'resolve-ad-missing') {
+      if (!await confirmAction({ title: 'Xác nhận chưa có quảng cáo trên Meta', message: 'Anh đã kiểm tra đúng nhóm quảng cáo trên Meta và xác nhận quảng cáo này CHƯA được tạo? Nếu đã tồn tại, thử lại có thể tạo trùng. Chỉ tạo lại quảng cáo lỗi này.', confirmLabel: 'Đã kiểm tra chưa có — tạo lại' })) return;
+      confirmation = { resolution: 'not_created', confirmed: true };
+    }
     history.retryingAdKeys = [...(history.retryingAdKeys ?? []), retryKey];
     renderHistoryWorkspace();
     try {
       const payload = action === 'retry-failed-adset'
         ? await api.retryFailedAdSet(runId, clientId)
-        : await api.retryFailedAd(runId, clientId);
+        : await api.retryFailedAd(runId, clientId, confirmation);
       if (payload.run) {
         history.detail = payload.run;
         history.detailsByRun = { ...(history.detailsByRun ?? {}), [runId]: payload.run };
         upsertActivityHistoryRun(payload.run);
       }
       resetHistoryPublicationSync();
-      showToast(action === 'retry-failed-adset' ? 'Đã thử tạo lại nhóm lỗi và quảng cáo bị bỏ qua trong nhóm.' : 'Đã bắt đầu thử tạo lại đúng quảng cáo bị lỗi.');
+      showToast(payload.adopted ? 'Đã nhận lại quảng cáo từ Meta, không tạo mới.' : action === 'retry-failed-adset' ? 'Đã thử tạo lại nhóm lỗi và quảng cáo bị bỏ qua trong nhóm.' : 'Đã bắt đầu thử tạo lại đúng quảng cáo bị lỗi.');
       renderHistoryWorkspace();
       scheduleHistoryRealtimeRefresh({ immediate: true });
       if (payload.run && shouldAutoResumeSeeding(payload.run.seeding)) void seedingRunner.resume(runId);

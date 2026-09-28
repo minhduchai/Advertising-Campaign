@@ -542,6 +542,7 @@ export function createRequestHandler({ config, metaClient, db, mediaStore, addre
           return;
         }
         await handleRunAdRetry({
+          request,
           response,
           session,
           db,
@@ -1541,6 +1542,7 @@ function matchRunAdRetryRoute(pathname) {
 }
 
 async function handleRunAdRetry({
+  request,
   response,
   session,
   db,
@@ -1563,7 +1565,6 @@ async function handleRunAdRetry({
     && String(node.clientId) === String(clientId)
     && node.status === 'failed'
     && !node.remoteId
-    && node.error?.type !== 'UncertainAdWriteError'
   ));
   const target = nodeType === 'adSet'
     ? (run.execution?.campaigns ?? []).flatMap(campaign => (campaign.adSets ?? [])
@@ -1572,6 +1573,16 @@ async function handleRunAdRetry({
   if (!failedNode || !target) {
     sendJson(response, 409, { error: 'Quảng cáo này không ở trạng thái có thể thử tạo lại' });
     return;
+  }
+  let resolution;
+  if (failedNode.error?.type === 'UncertainAdWriteError') {
+    resolution = await readJsonBodyOrRespond(request, response);
+    if (resolution === undefined) return;
+    if (!resolution || nodeType !== 'ad' || resolution.confirmed !== true
+      || !['not_created', 'existing'].includes(resolution.resolution)
+      || (resolution.resolution === 'existing' && !/^\d{1,40}$/.test(resolution.adId ?? ''))) {
+      return sendJson(response, 409, { error: 'Hãy kiểm tra trên Meta và xác nhận đã có hoặc chưa có quảng cáo trước khi xử lý.' });
+    }
   }
   if (nodeType === 'adSet' && !run.nodes.some(node => node.type === 'ad' && node.status === 'skipped'
     && !node.remoteId && target.adSet.ads.some(ad => String(ad.clientId) === String(node.clientId)))) {
@@ -1594,6 +1605,42 @@ async function handleRunAdRetry({
   if (!claimed) {
     sendJson(response, 409, { error: 'Lượt tạo đang được xử lý; không thể thử lại song song' });
     return;
+  }
+
+  // Re-read under the lease: a second click may have loaded the old failed node.
+  let freshRun;
+  try { freshRun = await db.getRun(runId); }
+  catch (error) { await db.releaseWorkflowLease(runId, workflowToken); throw error; }
+  const freshNode = freshRun?.nodes.find(node => node.clientId === failedNode.clientId);
+  if (!freshNode || freshNode.status !== 'failed' || freshNode.remoteId || !isTerminalRunStatusValue(freshRun.status)
+    || freshNode.error?.type !== failedNode.error?.type) {
+    await db.releaseWorkflowLease(runId, workflowToken);
+    return sendJson(response, 409, { error: 'Đối tượng đã thay đổi; hãy tải lại lịch sử trước khi xử lý.' });
+  }
+  if (resolution?.resolution === 'existing') {
+    try {
+      const token = decryptToken(connection.accessTokenCiphertext, config.tokenEncryptionKey);
+      const ad = await metaClient.getAdIdentity(token, resolution.adId);
+      if (String(ad.id) !== resolution.adId
+        || String(ad.account_id) !== String(target.campaign.adAccountId).replace(/^act_/, '')
+        || String(ad.adset_id) !== String(adSetNode.remoteId)
+        || String(ad.campaign_id) !== String(campaignNode.remoteId)
+        || ad.name !== target.ad.name
+        || (failedNode.creativeId && String(ad.creative?.id) !== String(failedNode.creativeId))
+        || freshRun.nodes.some(node => node.clientId !== clientId && String(node.remoteId) === resolution.adId)) {
+        return sendJson(response, 409, { error: 'Ad ID không khớp tài khoản, campaign, nhóm, tên hoặc creative của quảng cáo lỗi.' });
+      }
+      await db.updateNodeResult(runId, { ...freshNode, status: 'created', remoteId: ad.id,
+        creativeId: ad.creative?.id ?? failedNode.creativeId, error: null });
+      const updated = await db.getRun(runId);
+      await db.updateRunStatus(runId, updated.nodes.some(node => ['failed', 'skipped'].includes(node.status))
+        ? 'completed_with_errors' : 'completed');
+      const result = await db.getRun(runId);
+      return sendJson(response, 200, { accepted: true, adopted: true,
+        run: runResponse(result, await loadPublicSeedingState(db, session.metaUserId, result)) });
+    } finally {
+      await db.releaseWorkflowLease(runId, workflowToken);
+    }
   }
 
   const pendingNode = {

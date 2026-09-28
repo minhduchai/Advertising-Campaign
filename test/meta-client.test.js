@@ -3,6 +3,22 @@ import assert from 'node:assert/strict';
 import { createMetaClient, normalizeMetaError } from '../src/meta-client.js';
 import { testConfig } from './helpers.js';
 
+test('reads Ad identity with bearer auth and refuses non-numeric IDs', async () => {
+  let calls = 0;
+  const client = createMetaClient(testConfig(), { fetchImpl: async (url, options) => {
+    calls++;
+    const parsed = new URL(url);
+    assert.ok(parsed.pathname.endsWith('/123'));
+    assert.equal(parsed.searchParams.get('fields'), 'id,name,account_id,campaign_id,adset_id,creative{id}');
+    assert.equal(parsed.searchParams.has('access_token'), false);
+    assert.equal(options.headers.authorization, 'Bearer test-token');
+    return Response.json({ id: '123', account_id: '1' });
+  } });
+  assert.equal((await client.getAdIdentity('test-token', '123')).id, '123');
+  await assert.rejects(client.getAdIdentity('test-token', '../me'), /Invalid Ad ID/);
+  assert.equal(calls, 1);
+});
+
 test('Meta OAuth authorisation URL uses the configured Business Login flow', () => {
   const client = createMetaClient(testConfig(), { fetchImpl: async () => undefined });
 

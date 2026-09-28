@@ -158,9 +158,9 @@ export function createApiClient(fetchImpl = fetch, { storage = globalThis.localS
       `/api/runs/${encodeURIComponent(runId)}/workflow/resume`,
       postJson({})
     ),
-    retryFailedAd: (runId, clientId) => json(
+    retryFailedAd: (runId, clientId, confirmation = {}) => json(
       `/api/runs/${encodeURIComponent(runId)}/ads/${encodeURIComponent(clientId)}/retry`,
-      postJson({})
+      postJson(confirmation)
     ),
     retryFailedAdSet: (runId, clientId) => json(
       `/api/runs/${encodeURIComponent(runId)}/adsets/${encodeURIComponent(clientId)}/retry`,

@@ -1054,7 +1054,7 @@ test('retries only one failed Ad while preserving its successful Meta parents', 
   assert.match(workflowPayload.workflowToken, /^[a-f0-9]{48}$/);
 });
 
-for (const retryType of ['ad', 'adSet']) test(`retries one failed ${retryType} in-process when the workflow service is disabled`, async (context) => {
+for (const retryType of ['ad', 'adSet', 'uncertain']) test(`retries one failed ${retryType} in-process when the workflow service is disabled`, async (context) => {
   const execution = structuredClone(draft);
   execution.campaigns[0].adSets[0].ads[0].mediaAsset = {
     kind: 'image', accountId: 'act_1', imageHash: 'stored-image-hash', mimeType: 'image/jpeg', name: 'stored.jpg'
@@ -1070,6 +1070,7 @@ for (const retryType of ['ad', 'adSet']) test(`retries one failed ${retryType} i
   };
   let parentWrites = 0;
   let adSetWrites = 0;
+  if (retryType === 'uncertain') run.nodes[2].error.type = 'UncertainAdWriteError';
   if (retryType === 'adSet') {
     run.nodes[1] = { ...run.nodes[1], status: 'failed', remoteId: null };
     run.nodes[2] = { ...run.nodes[2], status: 'skipped' };
@@ -1115,7 +1116,8 @@ for (const retryType of ['ad', 'adSet']) test(`retries one failed ${retryType} i
 
   const retryPath = retryType === 'adSet' ? 'adsets/adset-1' : 'ads/ad-1';
   const response = await request(server, `/api/runs/run-1/${retryPath}/retry`, {
-    method: 'POST', headers
+    method: 'POST', headers,
+    ...(retryType === 'uncertain' ? { body: JSON.stringify({ resolution: 'not_created', confirmed: true }) } : {})
   });
 
   assert.equal(response.status, 200);
@@ -1136,6 +1138,61 @@ for (const retryType of ['ad', 'adSet']) test(`retries one failed ${retryType} i
     assert.equal(adWrites, 2);
   }
 });
+
+for (const scenario of ['missing-confirmation', 'wrong-account', 'wrong-adset', 'wrong-name', 'wrong-creative', 'valid', 'lease-busy', 'stale']) {
+  test(`uncertain Ad resolution: ${scenario}`, async context => {
+    const run = {
+      id: 'run-1', ownerMetaUserId: 'meta-user-1', status: 'completed_with_errors',
+      execution: structuredClone(draft), snapshot: { version: 3, campaigns: [] }, createdAt: 1000,
+      nodes: [
+        { clientId: 'campaign-1', type: 'campaign', status: 'created', remoteId: 'campaign-remote' },
+        { clientId: 'adset-1', type: 'adSet', status: 'created', remoteId: 'adset-remote' },
+        { clientId: 'ad-1', parentClientId: 'adset-1', type: 'ad', status: 'failed', creativeId: 'creative-1',
+          error: { type: 'UncertainAdWriteError' } }
+      ]
+    };
+    let reads = 0;
+    let released = 0;
+    let writes = 0;
+    const { server, headers } = createPublishRouteServer(context, {
+      getRun: () => run,
+      db: {
+        claimWorkflowLease: () => {
+          if (scenario === 'stale') run.nodes[2].remoteId = 'already-created';
+          return scenario !== 'lease-busy';
+        },
+        releaseWorkflowLease: () => { released++; },
+        updateNodeResult: (_id, node) => { writes++; run.nodes[2] = node; },
+        updateRunStatus: (_id, status) => { run.status = status; }
+      },
+      metaClient: {
+        createAd: () => assert.fail('Adoption must not create ads'),
+        getAdIdentity: async (_token, id) => {
+          reads++;
+          return { id, account_id: scenario === 'wrong-account' ? '2' : '1', campaign_id: 'campaign-remote',
+            adset_id: scenario === 'wrong-adset' ? 'other' : 'adset-remote',
+            name: scenario === 'wrong-name' ? 'other' : draft.campaigns[0].adSets[0].ads[0].name,
+            creative: { id: scenario === 'wrong-creative' ? 'other' : 'creative-1' } };
+        }
+      }
+    });
+    const response = await request(server, '/api/runs/run-1/ads/ad-1/retry', {
+      method: 'POST', headers,
+      body: JSON.stringify({ resolution: 'existing', confirmed: scenario !== 'missing-confirmation', adId: '123456' })
+    });
+    assert.equal(response.status, scenario === 'valid' ? 200 : 409);
+    assert.equal(writes, scenario === 'valid' ? 1 : 0);
+    assert.equal(reads, ['missing-confirmation', 'lease-busy', 'stale'].includes(scenario) ? 0 : 1);
+    assert.equal(released, ['missing-confirmation', 'lease-busy'].includes(scenario) ? 0 : 1);
+    if (scenario === 'valid') {
+      assert.equal(response.body.adopted, true);
+      assert.equal(run.nodes[2].remoteId, '123456');
+      const again = await request(server, '/api/runs/run-1/ads/ad-1/retry', { method: 'POST', headers });
+      assert.equal(again.status, 409);
+      assert.equal(writes, 1);
+    }
+  });
+}
 
 test('refreshes missing Post IDs for the connected owner without exposing the token', async (context) => {
   let storedNode = {
