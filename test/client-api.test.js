@@ -2,6 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createApiClient } from '../public/api.js';
 
+for (const type of ['video/mp4', 'video/quicktime']) {
+  for (const size of [0, 5000]) test(`rejects zero-filled ${type} before requesting R2: ${size}`, async () => {
+    const api = createApiClient(async () => assert.fail('invalid video must not upload'));
+    const file = new File([new Uint8Array(size)], 'broken.mp4', { type });
+    await assert.rejects(api.uploadAdMedia(file, 'act_1'), /byte 0/);
+    await assert.rejects(api.uploadMedia(file, { mode: 'r2', purpose: 'seeding' }), /byte 0/);
+  });
+}
+
 test('browser cache expires, rejects legacy entries and shares concurrent reads', async () => {
   const entries = new Map();
   const storage = {

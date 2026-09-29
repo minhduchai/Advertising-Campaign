@@ -66,6 +66,46 @@ test('legacy seeding is copied and verified before its database pointer changes'
   assert.deepEqual(calls, []);
 });
 
+for (const multipart of [false, true]) {
+  for (const scenario of ['valid', 'zeros', 'empty', 'short', 'read-error', 'image']) {
+    test(`R2 content validation: multipart=${multipart}, ${scenario}`, async () => {
+      const sizeBytes = scenario === 'empty' ? 0 : 5000;
+      const mimeType = scenario === 'image' ? 'image/jpeg' : 'video/mp4';
+      const name = scenario === 'image' ? 'file.jpg' : 'file.mp4';
+      let saved = false;
+      let reads = 0;
+      const store = createStore({
+        saveMedia: media => { saved = true; return media; },
+        send: async (command, options) => {
+          if (command.constructor.name === 'HeadObjectCommand') return { ContentLength: sizeBytes, ContentType: mimeType };
+          if (command.constructor.name === 'GetObjectCommand') {
+            reads++;
+            assert.equal(command.input.Range, 'bytes=0-4095');
+            assert.ok(options.abortSignal);
+            if (scenario === 'read-error') throw new Error('read failed');
+            const bytes = Buffer.alloc(scenario === 'short' ? 10 : 4096);
+            if (scenario !== 'zeros') bytes.write('ftyp', 4);
+            return { Body: { transformToByteArray: async () => bytes } };
+          }
+          return {};
+        }
+      });
+      const input = { ownerMetaUserId: 'owner', mediaId: 'media-1', key: `ads/owner/media-1/${name}`, name, mimeType, sizeBytes,
+        uploadId: 'upload-1', parts: [{ partNumber: 1, etag: 'etag' }] };
+      const result = multipart ? store.completeMultipartUpload(input) : store.completeUpload({ ownerMetaUserId: 'owner', input });
+      if (scenario === 'valid' || scenario === 'image') {
+        await result;
+        assert.equal(saved, true);
+      } else {
+        await assert.rejects(result, error => scenario === 'read-error'
+          ? error.message === 'read failed' : error.statusCode === (scenario === 'empty' ? 400 : 422));
+        assert.equal(saved, false);
+      }
+      assert.equal(reads, scenario === 'empty' || scenario === 'image' ? 0 : 1);
+    });
+  }
+}
+
 function createStore({ send, signUrl, saveMedia = (media) => media, registeredR2Keys = async () => [], configOverrides = {}, db = {} } = {}) {
   const client = { send: send ?? (async () => ({})) };
   return createR2MediaStore({
@@ -328,6 +368,12 @@ test('completes parts in order, verifies size, and saves owner metadata', async 
       commands.push(command);
       if (command.constructor.name === 'HeadObjectCommand') {
         return { ContentLength: 70_000_000, ContentType: 'video/mp4' };
+      }
+      if (command.constructor.name === 'GetObjectCommand') {
+        assert.equal(command.input.Range, 'bytes=0-4095');
+        const header = Buffer.alloc(4096);
+        header.write('ftyp', 4);
+        return { Body: { transformToByteArray: async () => header } };
       }
       return { ETag: 'complete-etag' };
     },

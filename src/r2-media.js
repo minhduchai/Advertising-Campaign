@@ -21,6 +21,20 @@ export function createR2MediaStore({ config, db, client, signUrl = getSignedUrl 
   let cleanupPromise = null;
   let lastCleanupCheckAt = 0;
 
+  async function validateVideoContent(key, mimeType, sizeBytes) {
+    if (!mimeType.startsWith('video/')) return;
+    // ponytail: check only the prefix for zero-fill; use a decoder for full video validation.
+    const length = Math.min(sizeBytes, 4096);
+    const result = await s3.send(new GetObjectCommand({
+      Bucket: config.r2BucketName, Key: key, Range: `bytes=0-${length - 1}`
+    }), { abortSignal: AbortSignal.timeout(15000) });
+    const bytes = await result.Body.transformToByteArray();
+    if (bytes.length !== length) throw mediaError('Không đọc đủ dữ liệu video trên R2. Vui lòng tải lại.', 422);
+    if (!bytes.some(byte => byte !== 0)) {
+      throw mediaError('File video rỗng hoặc phần đầu toàn byte 0. Vui lòng chọn bản video gốc phát được.', 422);
+    }
+  }
+
   async function enforceStorageLimit({ force = false, now = Date.now() } = {}) {
     if (!force && now - lastCleanupCheckAt < 5 * 60 * 1000) return { checked: false, deletedCount: 0 };
     if (cleanupPromise) return cleanupPromise;
@@ -92,6 +106,7 @@ export function createR2MediaStore({ config, db, client, signUrl = getSignedUrl 
       }));
       const head = await s3.send(new HeadObjectCommand({ Bucket: config.r2BucketName, Key: key }));
       if (Number(head.ContentLength) !== sizeBytes || head.ContentType !== mimeType) throw mediaError('R2 upload metadata mismatch', 400);
+      await validateVideoContent(key, mimeType, sizeBytes);
       return db.saveMedia({
         id: mediaId,
         ownerMetaUserId,
@@ -125,6 +140,7 @@ export function createR2MediaStore({ config, db, client, signUrl = getSignedUrl 
       requireMultipartPath({ ownerMetaUserId, mediaId: input.mediaId, key: input.key, name: input.name, mimeType: input.mimeType });
       const head = await s3.send(new HeadObjectCommand({ Bucket: config.r2BucketName, Key: input.key }));
       if (Number(head.ContentLength) !== input.sizeBytes || head.ContentType !== input.mimeType) throw mediaError('R2 upload metadata mismatch', 400);
+      await validateVideoContent(input.key, input.mimeType, input.sizeBytes);
       return db.saveMedia({ id: input.mediaId, ownerMetaUserId, name: input.name, mimeType: input.mimeType, blobUrl: `r2://${config.r2BucketName}/${input.key}`, blobPathname: input.key, sizeBytes: input.sizeBytes });
     },
     async getMedia({ ownerMetaUserId, id }) {

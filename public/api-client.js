@@ -215,6 +215,12 @@ export function createApiClient(fetchImpl = fetch, { storage = globalThis.localS
   }
 
   async function tryR2Upload(file, onProgress, xhrFactory, purpose = 'ads') {
+    if (file.type.startsWith('video/')) {
+      const header = new Uint8Array(await file.slice(0, 4096).arrayBuffer());
+      if (!header.some(byte => byte !== 0)) {
+        throw new Error('File video rỗng hoặc phần đầu toàn byte 0. Vui lòng chọn bản video gốc phát được.');
+      }
+    }
     const response = await fetchImpl('/api/r2-media/presign', postJson({
       name: file.name,
       mimeType: file.type,
