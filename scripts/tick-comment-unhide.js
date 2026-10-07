@@ -1,6 +1,7 @@
 import { loadConfig } from '../src/config.js';
 import { createSqlTransport } from '../src/postgres-transport.js';
 import { tickCommentUnhide } from '../src/comment-unhide-scheduler.js';
+import { recordError } from '../src/error-journal.js';
 
 // Invoked by cron under flock. No web-server restart or browser is needed.
 const config = loadConfig();
@@ -16,6 +17,7 @@ try {
   console.log(JSON.stringify({ at: new Date().toISOString(), ...result }));
   if (['disabled', 'needs_review', 'retry_pending'].includes(result.status)) process.exitCode = 1;
 } catch (error) {
+  recordError(error, { stage: 'comment-unhide-worker', ownerMetaUserId: config.commentUnhideOwner });
   console.error(JSON.stringify({ at: new Date().toISOString(), status: 'error', code: error.name }));
   process.exitCode = 1;
 } finally {

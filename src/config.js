@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { configureErrorJournal } from './error-journal.js';
 
 const requiredKeys = [
   'META_APP_ID',
@@ -72,7 +73,14 @@ export function loadConfig(environment = process.env) {
     mkdirSync(runtimeDirectory, { recursive: true });
   }
 
+  const errorJournalDirectory = isProduction || environment.ERROR_JOURNAL_DIRECTORY
+    ? resolve(fileURLToPath(new URL('..', import.meta.url)), environment.ERROR_JOURNAL_DIRECTORY ?? `${environment.RUNTIME_DIRECTORY ?? 'data'}/error-journal`)
+    : null;
+  configureErrorJournal({ directory: errorJournalDirectory,
+    secrets: Object.entries(environment).filter(([key]) => /SECRET|TOKEN|PASSWORD|DATABASE_URL|ACCESS_KEY|ENCRYPTION_KEY/.test(key)).map(([, value]) => value) });
+
   return {
+    errorJournalDirectory,
     appId: environment.META_APP_ID,
     appSecret: environment.META_APP_SECRET,
     loginConfigId: environment.META_LOGIN_CONFIG_ID,

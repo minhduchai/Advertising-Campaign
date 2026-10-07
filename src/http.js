@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { Readable } from 'node:stream';
+import { recordError } from './error-journal.js';
 
 const contentTypes = {
   '.png': 'image/png',
@@ -13,6 +14,12 @@ const contentTypes = {
 export const MAX_JSON_BODY_BYTES = 5 * 1024 * 1024;
 
 export function sendJson(response, status, body) {
+  if (status >= 400) {
+    const error = new Error(typeof body?.error === 'string' ? body.error : `API trả lỗi HTTP ${status}`);
+    if (Array.isArray(body?.errors)) error.errors = body.errors.slice(0, 20).map(item => new Error(String(item?.message ?? 'Dữ liệu không hợp lệ')));
+    const event = recordError(error, { stage: 'api-response', statusCode: status });
+    if (event.id) response.setHeader('x-error-reference', event.id);
+  }
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
   response.end(JSON.stringify(body));
 }

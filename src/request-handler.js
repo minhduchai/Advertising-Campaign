@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { dirname, resolve, win32 } from 'node:path';
 import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { decryptToken, encryptToken, signSession, verifySession } from './crypto.js';
 import { readBuffer, readFormData, readJson, sendJson, sendPublicFile } from './http.js';
@@ -47,6 +48,7 @@ import { createWorkflowDispatcher } from './workflow-dispatcher.js';
 import { createTelegramUploadAuth } from './telegram-upload-auth.js';
 import { createMetaRequestCache } from './meta-request-cache.js';
 import { createAddressGeocoder } from './address-geocoder.js';
+import { withErrorContext, setErrorContext, recordError, readErrorJournal, iterateErrorJournal, renderErrorJournal } from './error-journal.js';
 
 const projectDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const publicDirectory = resolve(projectDirectory, 'public');
@@ -86,6 +88,10 @@ export function createRequestHandler({ config, metaClient, db, mediaStore, addre
   const metaRequestCache = createMetaRequestCache();
   return async function handleRequest(request, response) {
     const url = new URL(request.url, 'http://localhost');
+    let diagnosticRunId;
+    try { diagnosticRunId = decodeURIComponent(url.pathname.match(/^\/api\/(?:internal\/workflow\/)?runs\/([^/]+)/)?.[1] ?? '') || undefined; } catch {}
+    return withErrorContext({ requestId: randomBytes(6).toString('hex'), method: request.method,
+      path: url.pathname, runId: diagnosticRunId }, async () => {
     if (url.pathname === '/api/health') url.pathname = '/health';
 
     try {
@@ -204,6 +210,29 @@ export function createRequestHandler({ config, metaClient, db, mediaStore, addre
       }
 
       const session = await getOrCreateSession(request, response, config, db);
+      setErrorContext({ ownerMetaUserId: session.metaUserId });
+
+      if (request.method === 'GET' && (url.pathname === '/api/errors' || /^\/api\/runs\/[^/]+\/errors$/.test(url.pathname))) {
+        if (!session.metaUserId) return sendJson(response, 401, { error: 'Hãy kết nối Meta để đọc nhật ký lỗi.' });
+        if (diagnosticRunId && !await getOwnedRunOrRespond({ response, session, db, runId: diagnosticRunId })) return;
+        const download = url.searchParams.get('download') === '1';
+        response.setHeader('cache-control', 'no-store');
+        if (download) {
+          response.setHeader('content-type', 'application/x-ndjson; charset=utf-8');
+          response.setHeader('content-disposition', 'attachment; filename="error-journal.jsonl"');
+          await pipeline(Readable.from((async function* () {
+            for await (const item of iterateErrorJournal({ ownerMetaUserId: session.metaUserId, runId: diagnosticRunId })) {
+              if (item.event) yield JSON.stringify(item.event) + '\n';
+            }
+          })()), response);
+          return;
+        }
+        const report = await readErrorJournal({ ownerMetaUserId: session.metaUserId, runId: diagnosticRunId });
+        response.setHeader('content-type', 'text/html; charset=utf-8');
+        response.setHeader('content-security-policy', "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'");
+        response.end(renderErrorJournal(report, `${url.pathname}?download=1`));
+        return;
+      }
 
       if (url.pathname === '/api/auth/session' && request.method === 'GET') {
         const connection = session.metaUserId ? await db.getConnection(session.metaUserId) : null;
@@ -580,14 +609,16 @@ export function createRequestHandler({ config, metaClient, db, mediaStore, addre
 
       sendJson(response, 404, { error: 'Not found' });
     } catch (error) {
-      const errorReference = randomBytes(6).toString('hex');
-      console.error(`[api:${errorReference}] ${request.method} ${url.pathname}`, error);
+      const event = recordError(error, { stage: 'api' });
+      const errorReference = event.id;
+      console.error(`[api:${errorReference}]`, JSON.stringify(event));
       if (response.headersSent) {
         if (!response.writableEnded) response.end();
         return;
       }
       sendApiError(response, error);
     }
+    });
   }
 }
 
@@ -2574,6 +2605,7 @@ async function handleRunCreation({ request, response, session, db, config, metaC
     snapshot,
     execution: createRunExecutionDraft(draft)
   });
+  setErrorContext({ runId: run.id });
   if (workflowDispatcher.enabled) {
     const workflowToken = randomBytes(24).toString('hex');
     const claimed = await db.claimWorkflowLease(run.id, workflowToken, Date.now(), WORKFLOW_LEASE_TTL_MS);

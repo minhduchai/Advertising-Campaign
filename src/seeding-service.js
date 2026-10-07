@@ -1,4 +1,5 @@
 import { isMetaThrottleError } from './meta-client.js';
+import { withErrorContext, setErrorContext, recordError } from './error-journal.js';
 
 const STALE_JOB_MS = 2 * 60_000;
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -66,7 +67,12 @@ export async function resolveSeedingConflict({
   };
 }
 
-export async function processNextSeedingJob({
+export function processNextSeedingJob(options) {
+  return withErrorContext({ runId: options.runId, ownerMetaUserId: options.ownerMetaUserId, secrets: [options.token] },
+    () => processNextSeedingJobWithContext(options));
+}
+
+async function processNextSeedingJobWithContext({
   runId,
   ownerMetaUserId,
   db,
@@ -98,6 +104,7 @@ export async function processNextSeedingJob({
   }
 
   let page;
+  setErrorContext({ clientId: job.id, nodeType: 'comment' });
   let attachmentUrl;
   try {
     const context = loadPageEngagementContext
@@ -110,6 +117,7 @@ export async function processNextSeedingJob({
       ? await getTrustedAttachmentUrl({ mediaStore, ownerMetaUserId, imageMediaId: job.imageMediaId })
       : undefined;
   } catch (error) {
+    recordError(error, { stage: 'seeding-prepare', clientId: job.id });
     if (isMetaThrottleError(error)) {
       const deferredAt = readNow(now);
       await db.deferSeedingJob({
@@ -148,6 +156,7 @@ export async function processNextSeedingJob({
       { signal: controller.signal }
     );
   } catch (error) {
+    recordError(error, { stage: 'seeding-write', clientId: job.id });
     if (isMetaThrottleError(error)) {
       const deferredAt = readNow(now);
       await db.deferSeedingJob({

@@ -166,6 +166,7 @@ export function renderActivityHistory(history, { adAccounts = [] } = {}) {
           <p>${escapeHtml(totalLabel)}</p>
         </div>
         <div class="history-header-actions">
+          <a class="button-secondary" href="/api/errors" target="_blank" rel="noopener">Nhật ký lỗi</a>
           <button type="button" class="button-secondary history-report-button" data-action="open-activity-history-report" ${history.loading || history.reportLoading || history.items.length === 0 ? 'disabled' : ''} title="Xem danh sách bài quảng cáo đang hiển thị">
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M3 10h18M9 4v16"></path></svg>
             <span>${history.reportLoading ? 'Đang tải...' : 'Xem bảng'}</span>
@@ -413,7 +414,7 @@ function renderHistorySummary(run, accountNames, history = {}) {
         ${runWorkflowStalled(run) ? `<button type="button" class="button-primary history-resume-run" data-action="resume-run-workflow" data-run-id="${escapeHtml(run.id)}"${(history.resumingRunIds ?? []).includes(run.id) ? ' disabled' : ''}>${(history.resumingRunIds ?? []).includes(run.id) ? 'Đang chạy tiếp...' : 'Chạy tiếp'}</button>` : ''}
         <span class="history-run-toggle-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg></span>
       </summary>
-      <div class="history-run-card-content">${renderCampaignHistoryCards(run, accountNames, history)}</div>
+      <div class="history-run-card-content"><a class="button-secondary" href="/api/runs/${escapeHtml(encodeURIComponent(run.id))}/errors" target="_blank" rel="noopener">Nhật ký lỗi lượt này</a>${renderCampaignHistoryCards(run, accountNames, history)}</div>
     </details>`;
   }
   const healthy = failed === 0;

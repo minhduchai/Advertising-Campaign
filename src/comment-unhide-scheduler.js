@@ -3,8 +3,14 @@ import { randomUUID } from 'node:crypto';
 import { decryptToken } from './crypto.js';
 import { processUnhidePage } from './comment-unhide.js';
 import { createMetaClient } from './meta-client.js';
+import { withErrorContext, setErrorContext, recordError } from './error-journal.js';
 
-export async function tickCommentUnhide({ config, db, metaClient }) {
+export function tickCommentUnhide(options) {
+  return withErrorContext({ ownerMetaUserId: options.config.commentUnhideOwner, stage: 'comment-unhide' },
+    () => tickCommentUnhideWithContext(options));
+}
+
+async function tickCommentUnhideWithContext({ config, db, metaClient }) {
   const owner = config.commentUnhideOwner;
   const enabledAt = config.commentUnhideEnabledAt;
   if (!owner || !Number.isFinite(enabledAt) || !config.databaseUrl) return { status: 'disabled' };
@@ -31,6 +37,7 @@ export async function tickCommentUnhide({ config, db, metaClient }) {
       ORDER BY next_at, post_id FOR UPDATE SKIP LOCKED LIMIT 1)
     RETURNING *`;
   if (!job) return { status: 'idle' };
+  setErrorContext({ runId: job.run_id, clientId: job.post_id, nodeType: 'post' });
   try {
     const connection = await db.getConnection(owner);
     if (!connection) throw new Error('Meta connection missing');
@@ -57,6 +64,7 @@ export async function tickCommentUnhide({ config, db, metaClient }) {
       WHERE owner_id = ${owner} AND post_id = ${job.post_id} AND lease = ${lease}`;
     return result;
   } catch (error) {
+    recordError(error, { stage: 'comment-unhide', runId: job.run_id, clientId: job.post_id });
     const attempts = Number(job.attempts) + 1;
     // Do not log raw Meta errors/URLs or tokens. Keep a diagnostic code for manual review.
     const diagnostic = String(error.meta?.code ?? error.name ?? 'Error');

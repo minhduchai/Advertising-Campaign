@@ -51,6 +51,16 @@ const draft = {
 
 const image = () => ({ id: 'media-image', mimeType: 'image/jpeg', name: 'image.jpg', content: Buffer.from('image') });
 
+test('campaign failures retain network codes without storing private cause messages', async () => {
+  const error = Object.assign(new TypeError('fetch failed', { cause: { message: 'Bearer private-token' } }), {
+    networkCodes: ['ECONNRESET']
+  });
+  const result = await publishDraft({ draft, token: 'fake', runId: 'network', getMedia: image,
+    metaClient: { createCampaign: async () => { throw error; } } });
+  assert.deepEqual(result.nodes.find(node => node.type === 'campaign').error.networkCodes, ['ECONNRESET']);
+  assert.doesNotMatch(JSON.stringify(result.nodes), /private-token/);
+});
+
 test('direct publishing waits out throttle at each mutation without recreating successful objects', async () => {
   for (const throttledMethod of ['createCampaign', 'createAdSet', 'uploadImage', 'createCreative', 'createAd']) {
     const calls = {};

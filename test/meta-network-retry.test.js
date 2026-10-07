@@ -23,10 +23,45 @@ for (const code of ['ECONNREFUSED', 'UND_ERR_CONNECT_TIMEOUT', 'EAI_AGAIN', 'ENO
     });
     await assert.rejects(client.createAd('token', 'act_1', new URLSearchParams()), /fetch failed/);
     const preConnect = ['ECONNREFUSED', 'UND_ERR_CONNECT_TIMEOUT', 'EAI_AGAIN', 'ENOTFOUND'].includes(code);
-    assert.equal(calls, preConnect ? 3 : 1);
-    assert.deepEqual(waits, preConnect ? [1000, 3000] : []);
+    assert.equal(calls, preConnect ? 2 : 1);
+    assert.deepEqual(waits, preConnect ? [1000] : []);
   });
 }
+
+for (const [causes, safe] of [
+  [[{ code: 'ENETUNREACH' }, { code: 'ETIMEDOUT', syscall: 'connect' }], true],
+  [[{ code: 'EHOSTUNREACH' }], true],
+  [[{ code: 'ETIMEDOUT', syscall: 'read' }], false],
+  [[{ code: 'ENETUNREACH' }, { code: 'ECONNRESET' }], false],
+  [[{ code: 'ENETUNREACH' }, {}], false]
+]) test(`aggregate connection failures retry once only if every connection failed before sending: ${JSON.stringify(causes)}`, async () => {
+  let calls = 0;
+  const waits = [];
+  const client = createMetaClient({ apiVersion: 'v23.0' }, {
+    fetchImpl: async () => {
+      calls++;
+      if (calls === 1) throw new TypeError('fetch failed', { cause: new AggregateError(causes) });
+      return Response.json({ id: 'campaign' });
+    },
+    networkRetryDelay: async ms => waits.push(ms)
+  });
+  const publish = () => client.createCampaign('private-token', 'act_1', new URLSearchParams());
+  if (safe) assert.equal(await publish(), 'campaign');
+  else await assert.rejects(publish, /fetch failed/);
+  assert.equal(calls, safe ? 2 : 1);
+  assert.deepEqual(waits, safe ? [1000] : []);
+});
+
+test('cancelling a network retry never sends a second write', async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const client = createMetaClient({ apiVersion: 'v23.0' }, {
+    fetchImpl: async () => { calls++; throw new TypeError('fetch failed', { cause: { code: 'ENOTFOUND' } }); },
+    networkRetryDelay: async () => controller.abort()
+  });
+  await assert.rejects(client.createCampaign('fake', 'act_1', new URLSearchParams(), { signal: controller.signal }));
+  assert.equal(calls, 1);
+});
 
 test('reconciliation requires matching creative and refuses incomplete pages', async () => {
   let paginated = false;

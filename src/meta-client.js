@@ -2,6 +2,10 @@ import { catalogCounts, mergePageCatalog } from './page-catalog.js';
 import { createMetaRateLimiter, createSharedCooldowns } from './meta-rate-limiter.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { createMetaReadCache } from './meta-read-cache.js';
+import { recordError } from './error-journal.js';
+
+const responseDiagnostics = new WeakMap();
+const metaDiagnostic = Symbol('metaDiagnostic');
 
 const targetingSearchMap = {
   interest: { type: 'adinterest', targetingField: 'interests' },
@@ -35,16 +39,38 @@ export function createMetaClient(config, { fetchImpl = fetch, networkRetryDelay 
   fetchImpl = async (input, options = {}) => {
     for (let attempt = 0; ; attempt++) {
       const release = await rateLimiter.acquire(options.signal, input);
+      const startedAt = Date.now();
+      const target = new URL(input);
+      const secrets = [new Headers(options.headers).get('authorization')?.replace(/^Bearer\s+/i, ''),
+        ...[...target.searchParams].filter(([key]) => /token|secret|code/i.test(key)).map(([, value]) => value)];
       try {
         const response = await rawFetch(input, options);
         await rateLimiter.observe(response, input);
+        const details = { secrets, method: options.method ?? 'GET', host: target.hostname, path: target.pathname,
+          statusCode: response.status, startedAt, headersDurationMs: Date.now() - startedAt, attempt: attempt + 1 };
+        responseDiagnostics.set(response, details);
         return response;
       } catch (error) {
         const readOnly = ['GET', 'HEAD'].includes(String(options.method ?? 'GET').toUpperCase());
-        const beforeConnect = ['EAI_AGAIN', 'ENOTFOUND', 'ECONNREFUSED', 'UND_ERR_CONNECT_TIMEOUT'].includes(error?.cause?.code);
+        const causes = error?.cause?.errors?.length ? error.cause.errors : [error?.cause];
+        const beforeConnect = causes.every(cause => (
+          ['EAI_AGAIN', 'ENOTFOUND', 'ECONNREFUSED', 'ENETUNREACH', 'EHOSTUNREACH', 'UND_ERR_CONNECT_TIMEOUT'].includes(cause?.code)
+          || cause?.code === 'ETIMEDOUT' && cause.syscall === 'connect'
+        ));
         const replayable = !options.body || typeof options.body === 'string' || options.body instanceof URLSearchParams || options.body instanceof FormData;
-        if (options.signal?.aborted || attempt >= 2 || error?.name !== 'TypeError'
-          || error.message !== 'fetch failed' || (!readOnly && !(beforeConnect && replayable))) throw error;
+        if (error?.name === 'TypeError' && error.message === 'fetch failed') {
+          error.networkCodes = [...new Set(causes.map(cause => cause?.code)
+            .filter(code => typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(code)))];
+          console.warn('[meta-network]', JSON.stringify({ method: options.method ?? 'GET',
+            host: target.hostname, path: target.pathname, attempt: attempt + 1, codes: error.networkCodes }));
+        }
+        const retrying = !options.signal?.aborted && attempt < (readOnly ? 2 : 1)
+          && error?.name === 'TypeError' && error.message === 'fetch failed' && (readOnly || beforeConnect && replayable);
+        recordError(error, { stage: 'meta-request', method: options.method ?? 'GET', host: target.hostname,
+          path: target.pathname, durationMs: Date.now() - startedAt, attempt: attempt + 1,
+          retrying, networkCodes: error.networkCodes }, secrets);
+        // Reads can be replayed; writes get one retry only when no connection was established.
+        if (!retrying) throw error;
       } finally {
         release();
       }
@@ -708,9 +734,20 @@ async function uploadMedia(fetchImpl, url, token, media, fields = {}, { signal }
 }
 
 async function readPayload(response) {
+  const details = responseDiagnostics.get(response);
   try {
-    return await response.json();
-  } catch {
+    const payload = await response.json();
+    if (!response.ok) {
+      const error = new Error(normalizeMetaError(payload, response.status).message);
+      error.meta = normalizeMetaError(payload, response.status);
+      const event = recordError(error, { ...details, durationMs: details ? Date.now() - details.startedAt : undefined,
+        stage: 'meta-response', statusCode: response.status }, details?.secrets);
+      if (payload && typeof payload === 'object') Object.defineProperty(payload, metaDiagnostic, { value: event });
+    }
+    return payload;
+  } catch (error) {
+    recordError(error, { ...details, durationMs: details ? Date.now() - details.startedAt : undefined,
+      stage: 'meta-response-json', statusCode: response.status }, details?.secrets);
     return {};
   }
 }
@@ -766,13 +803,16 @@ function throwMetaThrottle(payload, status, retryAfterMs) {
   error.statusCode = 429;
   error.retryable = true;
   error.retryAfterMs = retryAfterMs;
-  error.meta = normalizeMetaError(payload, status);
+  error.meta = payload?.[metaDiagnostic]?.error?.meta ?? normalizeMetaError(payload, status);
+  error.diagnosticId = payload?.[metaDiagnostic]?.id;
   throw error;
 }
 
 function throwMetaError(payload, status) {
-  const error = new Error(normalizeMetaError(payload, status).message);
-  error.meta = normalizeMetaError(payload, status);
+  const meta = payload?.[metaDiagnostic]?.error?.meta ?? normalizeMetaError(payload, status);
+  const error = new Error(meta.message);
+  error.meta = meta;
+  error.diagnosticId = payload?.[metaDiagnostic]?.id;
   throw error;
 }
 

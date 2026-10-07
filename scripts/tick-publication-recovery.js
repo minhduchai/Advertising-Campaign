@@ -4,6 +4,7 @@ import { createPostgresDatabase } from '../src/postgres-db.js';
 import { decryptToken } from '../src/crypto.js';
 import { createMetaClient } from '../src/meta-client.js';
 import { recoverPublications } from '../src/publication-recovery.js';
+import { recordError } from '../src/error-journal.js';
 
 const config = loadConfig();
 const sql = createSqlTransport(config.databaseUrl);
@@ -36,6 +37,7 @@ try {
   });
   console.log(JSON.stringify({ at: new Date().toISOString(), ...result }));
 } catch (error) {
+  recordError(error, { stage: 'publication-worker' });
   console.error(JSON.stringify({ at: new Date().toISOString(), status: 'error', code: error.name }));
   process.exitCode = 1;
 } finally {

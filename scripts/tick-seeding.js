@@ -5,6 +5,7 @@ import { decryptToken } from '../src/crypto.js';
 import { createMetaClient } from '../src/meta-client.js';
 import { createR2MediaStore } from '../src/r2-media.js';
 import { prepareRunSeeding, processNextSeedingJob } from '../src/seeding-service.js';
+import { recordError } from '../src/error-journal.js';
 
 const MAX_RUNTIME_MS = 100_000;
 const MAX_JOBS_PER_TICK = 24;
@@ -60,12 +61,14 @@ try {
         }
       }
     } catch (error) {
+      recordError(error, { stage: 'seeding-worker', runId: run.id, ownerMetaUserId: run.ownerMetaUserId }, [token]);
       failures += 1;
       console.error(JSON.stringify({ runId: run.id, code: String(error.meta?.code ?? error.name) }));
     }
   }
   console.log(JSON.stringify({ at: new Date().toISOString(), prepared, processed, failures }));
 } catch (error) {
+  recordError(error, { stage: 'seeding-worker' });
   console.error(JSON.stringify({ at: new Date().toISOString(), status: 'error', code: error.name }));
   process.exitCode = 1;
 } finally {

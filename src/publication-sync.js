@@ -1,4 +1,5 @@
 import { isMetaThrottleError } from './meta-client.js';
+import { withErrorContext, recordError } from './error-journal.js';
 
 const DEFAULT_MAX_GROUPS = 12;
 const DEFAULT_CONCURRENCY = 3; // matches PUBLISH_CONCURRENCY default
@@ -10,7 +11,12 @@ const THROTTLE_FALLBACK_MS = 30_000;
 
 // Post ID lookups for the web routes (seeding, history, Workflow) and the recovery worker alike:
 // one lookup per creative group, and the durable publication_recovery schedule decides when it is due.
-export async function syncRunPublications({
+export function syncRunPublications(options) {
+  return withErrorContext({ runId: options.run.id, ownerMetaUserId: options.run.ownerMetaUserId, secrets: [options.token] },
+    () => syncRunPublicationsWithContext(options));
+}
+
+async function syncRunPublicationsWithContext({
   run,
   token,
   metaClient,
@@ -68,7 +74,8 @@ export async function syncRunPublications({
     const attempts = 1 + Math.max(0, ...clientIds.map((clientId) => Number(schedule.get(clientId)?.attempts) || 0));
     try {
       const representative = group.nodes.find((node) => node.remoteId);
-      const publication = await metaClient.getAdPublication(token, representative.remoteId);
+      const publication = await withErrorContext({ clientId: representative.clientId, nodeType: 'ad' },
+        () => metaClient.getAdPublication(token, representative.remoteId));
       if (publication?.postId || publication?.permalinkUrl) await db.savePublication(run.id, group.nodes, publication);
       if (hasCompletePublication(publication)) {
         // The group keeps its lease: a caller still holding a run read before this save cannot claim it
@@ -78,6 +85,7 @@ export async function syncRunPublications({
       }
       await db.schedulePublicationLookups(run.id, clientIds, { attempts, nextAt: now() + backoffMs(attempts), code: null });
     } catch (error) {
+      recordError(error, { stage: 'publication-sync', clientId: group.scheduleKey });
       if (isMetaThrottleError(error)) {
         throttle ??= error;
         await reschedule(clientIds, {

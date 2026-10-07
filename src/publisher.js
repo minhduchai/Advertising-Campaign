@@ -8,6 +8,7 @@ import {
 } from './draft.js';
 import { isMetaThrottleError } from './meta-client.js';
 import { createMetaRequestCache } from './meta-request-cache.js';
+import { withErrorContext, recordError } from './error-journal.js';
 
 const PUBLIC_POST_DEADLINE_CLEANUP_MS = 10_000;
 const TRANSIENT_CREATIVE_RETRY_DELAYS_MS = [5_000, 12_000];
@@ -28,7 +29,12 @@ export function rememberReadyVideo(ownerMetaUserId, accountId, videoId, video) {
   return readyMetaVideos.load(JSON.stringify([ownerMetaUserId, accountId, videoId]), READY_VIDEO_TTL_MS, async () => thumbnail);
 }
 
-export async function publishDraft({
+export function publishDraft(options) {
+  return withErrorContext({ runId: options.runId, ownerMetaUserId: options.ownerMetaUserId, secrets: [options.token] },
+    () => publishDraftWithContext(options));
+}
+
+async function publishDraftWithContext({
   draft,
   token,
   runId,
@@ -93,8 +99,14 @@ export async function publishDraft({
     } else {
       nodes.push(node);
     }
+    if (node.error) recordError(node.error, { stage: 'publish-result', clientId: node.clientId,
+      nodeType: node.type, nodeName: node.name });
     try { await onNodeUpdate(runId, node); }
-    catch (error) { persistenceError = error; throw error; }
+    catch (error) {
+      recordError(error, { stage: 'publish-save', clientId: node.clientId, nodeType: node.type, nodeName: node.name });
+      persistenceError = error;
+      throw error;
+    }
     return node;
   };
 
@@ -275,7 +287,12 @@ async function adoptInterruptedNode({
   }
 }
 
-async function createAd({
+function createAd(options) {
+  return withErrorContext({ clientId: options.ad.clientId, nodeType: 'ad', nodeName: options.ad.name },
+    () => createAdWithContext(options));
+}
+
+async function createAdWithContext({
   ad,
   adSetId,
   parentClientId,
@@ -400,7 +417,9 @@ async function createAd({
             ...(artifact.permalinkUrl ? { permalinkUrl: artifact.permalinkUrl } : {})
           });
         }
-      } catch {}
+      } catch (error) {
+        recordError(error, { stage: 'publish-publication-lookup', clientId: ad.clientId, nodeType: 'ad', nodeName: ad.name });
+      }
       assertPublicationDeadline(deadlineContext);
     });
   } catch (error) {
@@ -427,6 +446,7 @@ async function createAd({
       });
       throw error;
     }
+    recordError(error, { stage: 'publish-ad', clientId: ad.clientId, nodeType: 'ad', nodeName: ad.name });
     const normalizedError = { ...normalizeError(error) };
     const failedNode = {
       clientId: ad.clientId,
@@ -888,12 +908,13 @@ async function createNode({ report, clientId, parentClientId = null, name, type,
   await report({ clientId, parentClientId, type, name, status: 'creating' });
   try {
     assertPublicationDeadline(deadlineContext);
-    const remoteId = await create();
+    const remoteId = await withErrorContext({ clientId, nodeType: type, nodeName: name }, create);
     const result = { clientId, parentClientId, type, name, status: 'created', remoteId };
     await report(result);
     assertPublicationDeadline(deadlineContext);
     return result;
   } catch (error) {
+    recordError(error, { stage: 'publish-node', clientId, nodeType: type, nodeName: name });
     const deadlineError = publicationDeadlineError(error, deadlineContext);
     if (deadlineError) throw deadlineError;
     if (isMetaThrottleError(error)) {
@@ -966,6 +987,8 @@ function normalizeError(error) {
     code: null,
     subcode: null,
     fbtraceId: null,
+    ...(error.diagnosticId ? { diagnosticId: error.diagnosticId } : {}),
+    ...(error.networkCodes?.length ? { networkCodes: error.networkCodes } : {}),
     ...(error.name === 'UncertainAdWriteError' ? {
       ...(error.networkCode ? { networkCode: error.networkCode } : {}),
       ...(error.reconciliation ? { reconciliation: error.reconciliation } : {})
