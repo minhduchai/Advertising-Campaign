@@ -336,13 +336,28 @@ export function createMetaClient(config, { fetchImpl = fetch, networkRetryDelay 
         throw new Error('Video chưa có link nguồn R2 để Meta tải; không dùng upload chia mảnh');
       }
 
-      const payload = await postParams(
-        fetchImpl,
-        `${graphVideoBaseUrl}/${accountId}/advideos`,
-        token,
-        new URLSearchParams({ file_url: sourceUrl, title: media.name }),
-        options
-      );
+      let payload;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          payload = await postParams(
+            fetchImpl,
+            `${graphVideoBaseUrl}/${accountId}/advideos`,
+            token,
+            new URLSearchParams({ file_url: sourceUrl, title: media.name }),
+            options
+          );
+          break;
+        } catch (error) {
+          // Only retry the explicit video import failure, never ad writes or unknown responses.
+          if (attempt !== 0 || error.statusCode !== 500 || Number(error.meta?.code) !== 1
+            || !/Please reduce the amount of data/i.test(error.meta?.message ?? '')) throw error;
+          recordError(error, { stage: 'meta-video-import-retry', method: 'POST',
+            host: 'graph-video.facebook.com', path: `/${config.apiVersion}/${accountId}/advideos`,
+            attempt: 1, retrying: true }, [token, sourceUrl]);
+          await networkRetryDelay(5000, undefined, { signal: options.signal });
+          options.signal?.throwIfAborted();
+        }
+      }
       if (!payload.id) {
         throw new Error('Meta không trả về video ID');
       }
@@ -841,6 +856,7 @@ function throwMetaError(payload, status) {
   const meta = payload?.[metaDiagnostic]?.error?.meta ?? normalizeMetaError(payload, status);
   const error = new Error(meta.message);
   error.meta = meta;
+  error.statusCode = status;
   error.diagnosticId = payload?.[metaDiagnostic]?.id;
   throw error;
 }

@@ -939,3 +939,54 @@ test('does not retry an app-wide code 4 limit inside the same request', async ()
   );
   assert.equal(calls, 1);
 });
+
+const videoImportFailure = { error: { code: 1, message: "Please reduce the amount of data you're asking for, then retry your request" } };
+const hostedVideo = { name: 'video.mp4', mimeType: 'video/mp4', sourceUrl: 'https://r2.example/video.mp4' };
+
+test('retries an explicit Meta 500 video import failure once with the same source', async () => {
+  const requests = [];
+  const waits = [];
+  const client = createMetaClient(testConfig(), {
+    networkRetryDelay: async ms => waits.push(ms),
+    fetchImpl: async (url, options) => {
+      requests.push({ url: String(url), body: options.body });
+      return requests.length === 1 ? Response.json(videoImportFailure, { status: 500 }) : Response.json({ id: 'recovered-video' });
+    }
+  });
+  assert.equal(await client.uploadVideo('token', 'act_1', hostedVideo), 'recovered-video');
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[0], requests[1]);
+  assert.deepEqual(waits, [5000]);
+});
+
+test('bounds video import retries and does not replay unknown writes or ad creation', async () => {
+  for (const scenario of ['persistent', 'missing-id', 'malformed', 'network', 'validation', 'ad']) {
+    let calls = 0;
+    const client = createMetaClient(testConfig(), {
+      networkRetryDelay: async () => {},
+      fetchImpl: async () => {
+        calls++;
+        if (scenario === 'missing-id') return Response.json({});
+        if (scenario === 'malformed') return new Response('broken', { status: 500 });
+        if (scenario === 'network') throw new TypeError('fetch failed', { cause: Object.assign(new Error('reset'), { code: 'ECONNRESET' }) });
+        return Response.json(scenario === 'validation' ? { error: { code: 100, message: 'Invalid video' } } : videoImportFailure,
+          { status: scenario === 'validation' ? 400 : 500 });
+      }
+    });
+    await assert.rejects(() => scenario === 'ad'
+      ? client.createAd('token', 'act_1', new URLSearchParams())
+      : client.uploadVideo('token', 'act_1', hostedVideo));
+    assert.equal(calls, scenario === 'persistent' ? 2 : 1, scenario);
+  }
+});
+
+test('cancellation during video import retry prevents the second write', async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const client = createMetaClient(testConfig(), {
+    networkRetryDelay: async () => controller.abort(),
+    fetchImpl: async () => { calls++; return Response.json(videoImportFailure, { status: 500 }); }
+  });
+  await assert.rejects(() => client.uploadVideo('token', 'act_1', hostedVideo, { signal: controller.signal }), { name: 'AbortError' });
+  assert.equal(calls, 1);
+});
