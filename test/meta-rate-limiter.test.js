@@ -1,5 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+
+test('a queued API call keeps a standalone worker alive until its slot is available', () => {
+  const moduleUrl = new URL('../src/meta-rate-limiter.js', import.meta.url).href;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import { createMetaRateLimiter } from ${JSON.stringify(moduleUrl)};
+    const limiter = createMetaRateLimiter();
+    const first = await limiter.acquire();
+    const second = await limiter.acquire();
+    setTimeout(() => { first(); second(); }, 20).unref();
+    const release = await limiter.acquire();
+    release();
+    console.log('acquired');
+  `], { encoding: 'utf8', timeout: 5000 });
+  assert.equal(child.status, 0, child.stderr);
+  assert.match(child.stdout, /acquired/);
+});
 import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

@@ -2,7 +2,7 @@
 // thì trả { pending: true, retryAfterMs }. Workflow ngủ rồi tạo instance kế tiếp (giống cách chờ seeding) để không vượt giới hạn
 // số bước/subrequest của một instance.
 export const MEDIA_PREPARE_KEY = "media:prepare";
-export const MAX_MEDIA_PREPARE_ATTEMPTS = 60;
+export const MAX_MEDIA_PREPARE_ATTEMPTS = 240;
 const MIN_WAIT_MS = 5_000;
 const MAX_WAIT_MS = 60_000;
 const DEFAULT_WAIT_MS = 15_000;

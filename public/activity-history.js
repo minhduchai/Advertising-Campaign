@@ -651,7 +651,8 @@ function renderHistoryDiagnostics(run, campaigns, history) {
         <label>Ad ID đã có trên Meta <input type="text" inputmode="numeric" data-existing-ad-id placeholder="Nhập Ad ID, không phải Post ID" ${retrying ? 'disabled' : ''}></label>
         <button type="button" class="button-secondary" data-action="resolve-ad-existing" data-run-id="${escapeHtml(run.id)}" data-client-id="${escapeHtml(node.clientId)}"${retrying ? ' disabled' : ''}>Đã có trên Meta — nhập Ad ID</button>
         <button type="button" class="button-secondary" data-action="resolve-ad-missing" data-run-id="${escapeHtml(run.id)}" data-client-id="${escapeHtml(node.clientId)}"${retrying ? ' disabled' : ''}>Đã kiểm tra chưa có — thử tạo lại</button>`
-      : ['ad', 'adSet'].includes(node.type) && node.status === 'failed' && !node.remoteId
+      : ['ad', 'adSet'].includes(node.type) && node.error?.type !== 'UncertainMetaWriteError'
+        && (node.status === 'failed' || node.status === 'retry_pending' && node.error?.type === 'VideoProcessingPendingError') && !node.remoteId
       ? `<button type="button" class="button-secondary history-retry-ad" data-action="retry-failed-${node.type === 'adSet' ? 'adset' : 'ad'}" data-run-id="${escapeHtml(run.id)}" data-client-id="${escapeHtml(node.clientId)}"${retrying ? ' disabled' : ''}>${retrying ? 'Đang thử lại...' : node.type === 'adSet' ? 'Thử tạo lại nhóm quảng cáo' : 'Thử tạo lại quảng cáo'}</button>`
       : '';
     return `<article class="history-diagnostic-item is-${escapeHtml(node.status)}"><div><span>${escapeHtml(labels[node.type] ?? node.type)}</span><strong>${escapeHtml(node.name ?? 'Chưa đặt tên')}</strong></div><dl><div><dt>ID cục bộ</dt><dd>${escapeHtml(node.clientId)}</dd></div>${node.remoteId ? `<div><dt>ID Meta</dt><dd>${escapeHtml(node.remoteId)}</dd></div>` : ''}</dl><p>${escapeHtml(message)}</p>${retryAction}</article>`;
@@ -819,7 +820,7 @@ function historyPublication(result, permalink) {
 function statusBadge(status) {
   const labels = {
     creating: 'Đang tạo',
-    retry_pending: 'Đang chờ hạn mức Meta',
+    retry_pending: 'Đang chờ xử lý tiếp',
     completed: 'Hoàn tất',
     completed_with_errors: 'Hoàn tất có lỗi',
     failed: 'Thất bại',

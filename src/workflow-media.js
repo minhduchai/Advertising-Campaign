@@ -6,7 +6,15 @@ const DEFAULT_RETRY_AFTER_MS = 15_000;
 // Bước `media:prepare` của workflow: đảm bảo mọi video khác nhau của lượt tạo đã được upload lên Meta (1 lệnh file_url mỗi video)
 // và đã xử lý xong, TRƯỚC khi bắt đầu tạo chiến dịch/nhóm/quảng cáo. Mỗi lời gọi chỉ kiểm tra trạng thái một lần (không chờ
 // vòng lặp) để không chiếm hết mốc 95s của bước; còn video chưa sẵn sàng thì trả `pending: true` để workflow ngủ rồi gọi lại.
-export async function prepareWorkflowMedia({
+export async function prepareWorkflowMedia(options) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 95_000);
+  timer.unref?.();
+  try { return await prepareWithDeadline({ ...options, signal: controller.signal }); }
+  finally { clearTimeout(timer); }
+}
+
+async function prepareWithDeadline({
   runId,
   ownerMetaUserId,
   draft,
@@ -20,7 +28,8 @@ export async function prepareWorkflowMedia({
   updateNodeResult,
   now = Date.now,
   stopStartingAt = Number.POSITIVE_INFINITY,
-  retryAfterMs = DEFAULT_RETRY_AFTER_MS
+  retryAfterMs = DEFAULT_RETRY_AFTER_MS,
+  signal
 }) {
   const groups = collectMediaGroups(draft);
   const terminalClientIds = new Set(existingNodes
@@ -47,14 +56,15 @@ export async function prepareWorkflowMedia({
       let videoId = media.metaVideoId ?? await getMetaVideoId(ownerMetaUserId, group.mediaId, group.accountId);
       if (!videoId) {
         if (now() >= stopStartingAt) continue; // hết thời gian bắt đầu việc mới: để lần gọi sau
-        videoId = String(await metaClient.uploadVideo(token, group.accountId, media));
+        videoId = String(await metaClient.uploadVideo(token, group.accountId, media, { signal }));
         await saveMetaVideoId(ownerMetaUserId, group.mediaId, group.accountId, videoId);
       }
       if (knownReadyVideo(ownerMetaUserId, group.accountId, videoId)) {
         ready += 1;
         continue;
       }
-      const video = await metaClient.getVideoStatus(token, videoId);
+      if (now() >= stopStartingAt || signal.aborted) continue;
+      const video = await metaClient.getVideoStatus(token, videoId, { signal });
       const status = video.status?.video_status;
       if (status === 'ready') {
         await rememberReadyVideo(ownerMetaUserId, group.accountId, videoId, video);
@@ -66,6 +76,7 @@ export async function prepareWorkflowMedia({
       }
     } catch (error) {
       if (isMetaThrottleError(error)) throw error;
+      if (signal.aborted && !error?.uncertainWrite) continue;
       failed += 1;
       await failGroup(group, error?.meta?.message ?? error?.message ?? 'Không thể chuẩn bị video', { runId, updateNodeResult, terminalClientIds });
     }

@@ -104,7 +104,6 @@ export function createMetaRateLimiter({ now = Date.now, cooldowns = null } = {})
         resolve();
       };
       const timer = setTimeout(finish, milliseconds);
-      timer.unref?.();
       const onAbort = () => {
         if (settled) return;
         settled = true;

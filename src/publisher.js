@@ -9,10 +9,12 @@ import {
 import { isMetaThrottleError } from './meta-client.js';
 import { createMetaRequestCache } from './meta-request-cache.js';
 import { withErrorContext, recordError } from './error-journal.js';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 const PUBLIC_POST_DEADLINE_CLEANUP_MS = 10_000;
 const TRANSIENT_CREATIVE_RETRY_DELAYS_MS = [5_000, 12_000];
 const READY_VIDEO_TTL_MS = 30 * 60_000;
+export const VIDEO_PROCESSING_TIMEOUT_MS = 60 * 60_000;
 const activeMetaVideoUploads = new Map();
 const activeMetaImageUploads = new Map();
 // A video Meta reported ready stays ready, so Workflow media prepare and later publish batches reuse the
@@ -30,8 +32,13 @@ export function rememberReadyVideo(ownerMetaUserId, accountId, videoId, video) {
 }
 
 export function publishDraft(options) {
+  const controller = new AbortController();
+  const remaining = options.deadlineAt - (options.now ?? Date.now)();
+  const timer = Number.isFinite(remaining) ? setTimeout(() => controller.abort(), Math.max(0, remaining)) : null;
+  timer?.unref?.();
+  const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
   return withErrorContext({ runId: options.runId, ownerMetaUserId: options.ownerMetaUserId, secrets: [options.token] },
-    () => publishDraftWithContext(options));
+    () => publishDraftWithContext({ ...options, signal })).finally(() => clearTimeout(timer));
 }
 
 async function publishDraftWithContext({
@@ -215,7 +222,7 @@ async function publishDraftWithContext({
         const retryAfterMs = Number(error.retryAfterMs);
         const waitMs = Math.max(1000, Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? retryAfterMs : 30000);
         if (now() + waitMs >= deadlineAt) throw error;
-        await delay(waitMs);
+        await delay(waitMs, deadlineContext.signal);
         assertPublicationDeadline(deadlineContext);
       }
     }
@@ -235,8 +242,7 @@ async function publishDraftWithContext({
   };
 }
 
-// Mốc cứng chỉ ngắt ở các điểm kiểm tra trước/sau lời gọi Meta (lời gọi đang bay vẫn ghi node `created` trước khi kiểm tra),
-// nên node còn `creating` lúc này chưa được tạo trên Meta: đưa về retry_pending để giao diện và lần chạy sau xử lý.
+// Uncertain writes are persisted as failed/review before this runs. Only safe unfinished work is released.
 async function releaseInterruptedNodes(nodes, report) {
   for (const node of nodes.filter((entry) => entry.status === 'creating')) {
     await report({
@@ -359,7 +365,7 @@ async function createAdWithContext({
       try {
         if (!canReconcile || !metaClient.findCreatedObject) throw error;
         for (const waitMs of [1000, 3000]) {
-          await delay(waitMs);
+          await delay(waitMs, deadlineContext.signal);
           assertPublicationDeadline(deadlineContext);
           const matches = await metaClient.findCreatedObject(token, adSetId, 'ads', ad.name, {
             sinceMs: writeStartedAt, creativeId: artifact.creativeId, ...publicationOptions(deadlineContext)
@@ -423,6 +429,17 @@ async function createAdWithContext({
       assertPublicationDeadline(deadlineContext);
     });
   } catch (error) {
+    if (error?.name === 'UncertainAdWriteError') {
+      await report({ clientId: ad.clientId, parentClientId, type: 'ad', name: ad.name,
+        status: 'failed', error: normalizeError(error),
+        ...(artifact?.creativeId ? { creativeId: artifact.creativeId, creativeArtifactKey: creativeArtifactKey(accountId, pageId, ad) } : {}) });
+      return;
+    }
+    if (error?.code === 'META_VIDEO_PROCESSING_PENDING') {
+      await report({ clientId: ad.clientId, parentClientId, type: 'ad', name: ad.name,
+        status: 'retry_pending', error: normalizeError(error) });
+      return;
+    }
     const deadlineError = publicationDeadlineError(error, deadlineContext);
     if (deadlineError) {
       if (artifact?.postId && artifact.successfulAds === 0) {
@@ -864,7 +881,7 @@ async function createCreativeWithRetry({
       const retryDelay = TRANSIENT_CREATIVE_RETRY_DELAYS_MS[attempt];
       if (!isTransientCreativeError(error) || retryDelay === undefined) throw error;
       if (deadlineContext.now() + retryDelay >= deadlineContext.deadlineAt) throw error;
-      await delay(retryDelay);
+      await delay(retryDelay, deadlineContext.signal);
     }
   }
 }
@@ -875,17 +892,20 @@ function isTransientCreativeError(error) {
 }
 
 async function waitForVideoReady(metaClient, token, videoId, delay, deadlineContext) {
-  const videoDeadlineAt = Math.min(deadlineContext.now() + 120_000, deadlineContext.deadlineAt);
+  const videoDeadlineAt = Math.min(deadlineContext.now() + VIDEO_PROCESSING_TIMEOUT_MS, deadlineContext.deadlineAt);
   const pollDelays = [0, 2_000, 4_000, 8_000, 15_000, 30_000];
   let pollCount = 0;
   while (true) {
     assertPublicationDeadline(deadlineContext);
     if (deadlineContext.now() >= videoDeadlineAt) {
-      throw new Error('Video xử lý quá lâu');
+      const pending = new Error('Video vẫn đang xử lý sau 60 phút; tiếp tục kiểm tra bằng Video ID đã lưu, không tải lại.');
+      pending.name = 'VideoProcessingPendingError';
+      pending.code = 'META_VIDEO_PROCESSING_PENDING';
+      throw pending;
     }
     const pollDelay = pollDelays[Math.min(pollCount, pollDelays.length - 1)];
     pollCount += 1;
-    if (pollDelay > 0) await delay(Math.min(pollDelay, videoDeadlineAt - deadlineContext.now()));
+    if (pollDelay > 0) await delay(Math.min(pollDelay, videoDeadlineAt - deadlineContext.now()), deadlineContext.signal);
     assertPublicationDeadline(deadlineContext);
     const video = await metaClient.getVideoStatus(
       token,
@@ -909,12 +929,21 @@ async function createNode({ report, clientId, parentClientId = null, name, type,
   try {
     assertPublicationDeadline(deadlineContext);
     const remoteId = await withErrorContext({ clientId, nodeType: type, nodeName: name }, create);
+    if (!remoteId) throw Object.assign(new Error('Meta không trả về ID; cần kiểm tra đối tượng trước khi gửi lại.'), { uncertainWrite: true });
     const result = { clientId, parentClientId, type, name, status: 'created', remoteId };
     await report(result);
     assertPublicationDeadline(deadlineContext);
     return result;
   } catch (error) {
     recordError(error, { stage: 'publish-node', clientId, nodeType: type, nodeName: name });
+    if (error?.uncertainWrite) {
+      const result = { clientId, parentClientId, type, name, status: 'failed', error: {
+        message: 'Mất phản hồi tạo đối tượng; cần kiểm tra trên Meta trước khi gửi lại để tránh trùng.',
+        type: 'UncertainMetaWriteError'
+      } };
+      await report(result);
+      return result;
+    }
     const deadlineError = publicationDeadlineError(error, deadlineContext);
     if (deadlineError) throw deadlineError;
     if (isMetaThrottleError(error)) {
@@ -1073,6 +1102,6 @@ class PublicationDeadlineError extends Error {
   }
 }
 
-function defaultDelay(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+function defaultDelay(milliseconds, signal) {
+  return sleep(milliseconds, undefined, { signal });
 }

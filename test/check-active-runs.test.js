@@ -4,6 +4,12 @@ import { countActiveRuns, isRunActive, STALE_RUN_MS, DIRECT_RUN_WINDOW_MS } from
 
 const NOW = 1_800_000_000_000;
 
+test('long direct video creation and retries block deployment even after their old lease expires', () => {
+  assert.equal(isRunActive({ status: 'creating', created_at: NOW - 50 * 60_000, direct_mode: true }, NOW), true);
+  assert.equal(isRunActive({ status: 'retrying_ad', created_at: NOW - 2 * 60 * 60_000,
+    workflow_lease_expires_at: NOW - 60_000, direct_mode: true }, NOW), true);
+});
+
 test('a workflow run with an unexpired lease is active', () => {
   assert.equal(isRunActive({ status: 'creating', created_at: NOW - 60_000, workflow_lease_expires_at: NOW + 5_000 }, NOW), true);
   assert.equal(isRunActive({ status: 'seeding', created_at: NOW - 3_600_000, workflow_lease_expires_at: NOW + 1 }, NOW), true);

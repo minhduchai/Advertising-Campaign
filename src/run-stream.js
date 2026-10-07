@@ -13,6 +13,13 @@ export function startRunStream(response, status = 201) {
     'x-accel-buffering': 'no'
   });
   response.flushHeaders?.();
+  const heartbeat = setInterval(() => {
+    if (!response.writableEnded && !response.destroyed) response.write('\n');
+  }, 25000);
+  heartbeat.unref?.();
+  const stop = () => clearInterval(heartbeat);
+  response.once?.('finish', stop);
+  response.once?.('close', stop);
 }
 
 export function writeRunEvent(response, event) {
@@ -21,13 +28,22 @@ export function writeRunEvent(response, event) {
 }
 
 // Blank NDJSON lines keep idle proxies alive without changing the client's event protocol.
-export async function waitWithRunHeartbeat(response, milliseconds) {
+export async function waitWithRunHeartbeat(response, milliseconds, signal) {
   const heartbeat = setInterval(() => {
     if (!response.writableEnded && !response.destroyed) response.write('\n');
   }, 25000);
   heartbeat.unref?.();
   try {
-    await new Promise((resolve) => setTimeout(resolve, milliseconds));
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve(); }, milliseconds);
+      const abort = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', abort);
+        reject(signal.reason ?? new DOMException('The operation was aborted', 'AbortError'));
+      };
+      if (signal?.aborted) abort();
+      else signal?.addEventListener('abort', abort, { once: true });
+    });
   } finally {
     clearInterval(heartbeat);
   }

@@ -1594,9 +1594,12 @@ async function handleRunAdRetry({
   const failedNode = run.nodes.find((node) => (
     node.type === nodeType
     && String(node.clientId) === String(clientId)
-    && node.status === 'failed'
+    && (node.status === 'failed' || node.status === 'retry_pending' && node.error?.type === 'VideoProcessingPendingError')
     && !node.remoteId
   ));
+  if (failedNode?.error?.type === 'UncertainMetaWriteError') {
+    return sendJson(response, 409, { error: 'Mất phản hồi tạo đối tượng; cần đối chiếu trên Meta trước khi gửi lại để tránh trùng.' });
+  }
   const target = nodeType === 'adSet'
     ? (run.execution?.campaigns ?? []).flatMap(campaign => (campaign.adSets ?? [])
       .filter(adSet => String(adSet.clientId) === String(clientId)).map(adSet => ({ campaign, adSet })))[0]
@@ -1643,7 +1646,7 @@ async function handleRunAdRetry({
   try { freshRun = await db.getRun(runId); }
   catch (error) { await db.releaseWorkflowLease(runId, workflowToken); throw error; }
   const freshNode = freshRun?.nodes.find(node => node.clientId === failedNode.clientId);
-  if (!freshNode || freshNode.status !== 'failed' || freshNode.remoteId || !isTerminalRunStatusValue(freshRun.status)
+  if (!freshNode || !(freshNode.status === 'failed' || freshNode.status === 'retry_pending' && freshNode.error?.type === 'VideoProcessingPendingError') || freshNode.remoteId || !isTerminalRunStatusValue(freshRun.status)
     || freshNode.error?.type !== failedNode.error?.type) {
     await db.releaseWorkflowLease(runId, workflowToken);
     return sendJson(response, 409, { error: 'Đối tượng đã thay đổi; hãy tải lại lịch sử trước khi xử lý.' });
@@ -1783,7 +1786,7 @@ async function retryRunAdLocally({ runId, ownerMetaUserId, token, workflowToken,
     onlyAdClientIds: new Set(run.nodes
       .filter((node) => node.type === 'ad' && node.status === 'retry_pending')
       .map((node) => String(node.clientId))),
-    deadlineAt: Date.now() + 220_000,
+    deadlineAt: Date.now() + 65 * 60_000,
     getMedia: async (requestedOwnerId, mediaId) => {
       if (String(requestedOwnerId) !== String(ownerMetaUserId)) return null;
       return mediaAssets.get(mediaId) ?? mediaStore.getMedia({ ownerMetaUserId, id: mediaId });
@@ -1799,7 +1802,7 @@ async function retryRunAdLocally({ runId, ownerMetaUserId, token, workflowToken,
     ),
     onNodeUpdate: (targetRunId, node) => db.updateNodeResult(targetRunId, node)
   });
-  const status = result.nodes.some((node) => ['failed', 'skipped'].includes(node.status))
+  const status = result.nodes.some((node) => ['failed', 'skipped', 'retry_pending'].includes(node.status))
     ? 'completed_with_errors'
     : 'completed';
   await db.updateRunStatus(runId, status);
@@ -2648,10 +2651,15 @@ async function handleRunCreation({ request, response, session, db, config, metaC
       concurrency: config.publishConcurrency,
       pagePublishingContexts,
       waitForThrottle: true,
-      ...(streaming ? { delay: (ms) => waitWithRunHeartbeat(response, ms) } : {}),
-      getMedia: async (ownerMetaUserId, mediaId) => (
-        ownerMetaUserId === session.metaUserId ? selectedMedia.get(mediaId) ?? null : null
-      ),
+      ...(streaming ? { delay: (ms, signal) => waitWithRunHeartbeat(response, ms, signal) } : {}),
+      getMedia: async (ownerMetaUserId, mediaId) => {
+        if (ownerMetaUserId !== session.metaUserId) return null;
+        const media = selectedMedia.get(mediaId) ?? null;
+        if (media?.blobUrl?.startsWith('r2://') && mediaStore.getMetaFetchUrl) {
+          return { ...media, sourceUrl: await mediaStore.getMetaFetchUrl({ ownerMetaUserId, id: mediaId }) };
+        }
+        return media;
+      },
       getMetaVideoId: (ownerMetaUserId, mediaId, adAccountId) => (
         db.getMetaVideoId(ownerMetaUserId, mediaId, adAccountId)
       ),
@@ -2672,7 +2680,7 @@ async function handleRunCreation({ request, response, session, db, config, metaC
         if (streaming) writeRunEvent(response, { type: 'node_updated', runId, node });
       }
     });
-    const status = result.nodes.some((node) => node.status === 'failed')
+    const status = result.nodes.some((node) => node.status === 'failed' || node.status === 'retry_pending')
       ? 'completed_with_errors'
       : 'completed';
     const completedAdIds = new Set(result.nodes

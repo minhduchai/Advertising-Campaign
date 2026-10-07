@@ -37,13 +37,19 @@ export function createMetaClient(config, { fetchImpl = fetch, networkRetryDelay 
   const rawFetch = fetchImpl;
   const rateLimiter = createMetaRateLimiter({ cooldowns: createSharedCooldowns(config.metaReadCacheDirectory) });
   fetchImpl = async (input, options = {}) => {
+    const timeoutSignal = AbortSignal.timeout(config.metaRequestTimeoutMs ?? 300_000);
+    options = { ...options, signal: options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal };
     for (let attempt = 0; ; attempt++) {
-      const release = await rateLimiter.acquire(options.signal, input);
+      const release = await rateLimiter.acquire(options.signal, input).catch(error => {
+        error.notDispatched = true;
+        throw error;
+      });
       const startedAt = Date.now();
       const target = new URL(input);
       const secrets = [new Headers(options.headers).get('authorization')?.replace(/^Bearer\s+/i, ''),
         ...[...target.searchParams].filter(([key]) => /token|secret|code/i.test(key)).map(([, value]) => value)];
       try {
+        if (options.signal.aborted) throw Object.assign(new DOMException('Request was cancelled before dispatch', 'AbortError'), { notDispatched: true });
         const response = await rawFetch(input, options);
         await rateLimiter.observe(response, input);
         const details = { secrets, method: options.method ?? 'GET', host: target.hostname, path: target.pathname,
@@ -53,10 +59,7 @@ export function createMetaClient(config, { fetchImpl = fetch, networkRetryDelay 
       } catch (error) {
         const readOnly = ['GET', 'HEAD'].includes(String(options.method ?? 'GET').toUpperCase());
         const causes = error?.cause?.errors?.length ? error.cause.errors : [error?.cause];
-        const beforeConnect = causes.every(cause => (
-          ['EAI_AGAIN', 'ENOTFOUND', 'ECONNREFUSED', 'ENETUNREACH', 'EHOSTUNREACH', 'UND_ERR_CONNECT_TIMEOUT'].includes(cause?.code)
-          || cause?.code === 'ETIMEDOUT' && cause.syscall === 'connect'
-        ));
+        const beforeConnect = isPreConnectFailure(error);
         const replayable = !options.body || typeof options.body === 'string' || options.body instanceof URLSearchParams || options.body instanceof FormData;
         if (error?.name === 'TypeError' && error.message === 'fetch failed') {
           error.networkCodes = [...new Set(causes.map(cause => cause?.code)
@@ -74,7 +77,8 @@ export function createMetaClient(config, { fetchImpl = fetch, networkRetryDelay 
       } finally {
         release();
       }
-      await networkRetryDelay([1000, 3000][attempt], undefined, { signal: options.signal });
+      try { await networkRetryDelay([1000, 3000][attempt], undefined, { signal: options.signal }); }
+      catch (error) { error.notDispatched = true; throw error; }
     }
   };
   fetchImpl.rateLimiter = rateLimiter;
@@ -440,7 +444,7 @@ export function createMetaClient(config, { fetchImpl = fetch, networkRetryDelay 
 
     async createAd(token, accountId, params, options = {}) {
       const payload = await postParams(fetchImpl, `${graphBaseUrl}/${accountId}/ads`, token, params, options);
-      if (!payload?.id) {
+      if (!((typeof payload?.id === 'string' && payload.id.trim()) || (typeof payload?.id === 'number' && payload.id > 0))) {
         const error = new Error('Meta trả về phản hồi nhưng thiếu Ad ID; hãy kiểm tra trên Meta trước khi thử tạo lại.');
         error.name = 'UncertainAdWriteError';
         throw error;
@@ -708,15 +712,38 @@ async function requestJson(fetchImpl, url, params, token, { signal } = {}) {
 }
 
 async function postParams(fetchImpl, url, token, params, { signal } = {}) {
-  return sendWithThrottleRetry(() => fetchImpl(url, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${token}`,
-      'content-type': 'application/x-www-form-urlencoded'
-    },
-    body: params.toString(),
-    signal
-  }), signal, fetchImpl.rateLimiter, url);
+  try {
+    const payload = await sendWithThrottleRetry(() => fetchImpl(url, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/x-www-form-urlencoded'
+      },
+      body: params.toString(),
+      signal
+    }), signal, fetchImpl.rateLimiter, url);
+    if (['campaigns', 'adsets', 'adcreatives', 'advideos'].includes(new URL(url).pathname.split('/').at(-1))
+      && !((typeof payload?.id === 'string' && payload.id.trim()) || (typeof payload?.id === 'number' && payload.id > 0))) {
+      throw new TypeError('fetch failed', { cause: Object.assign(new Error('Meta response is missing an object ID'), { code: 'META_MISSING_ID' }) });
+    }
+    return payload;
+  } catch (error) {
+    if (error?.definiteRejection || error?.notDispatched) throw error;
+    const beforeConnect = isPreConnectFailure(error);
+    if ((error?.name === 'TypeError' && error.message === 'fetch failed' && !beforeConnect)
+      || ['AbortError', 'TimeoutError'].includes(error?.name)) {
+      const uncertain = new TypeError('fetch failed', { cause: error });
+      uncertain.uncertainWrite = true;
+      throw uncertain;
+    }
+    throw error;
+  }
+}
+
+function isPreConnectFailure(error) {
+  const causes = error?.cause?.errors?.length ? error.cause.errors : [error?.cause];
+  return causes.every(cause => ['EAI_AGAIN', 'ENOTFOUND', 'ECONNREFUSED', 'ENETUNREACH', 'EHOSTUNREACH', 'UND_ERR_CONNECT_TIMEOUT'].includes(cause?.code)
+    || cause?.code === 'ETIMEDOUT' && cause.syscall === 'connect');
 }
 
 async function uploadMedia(fetchImpl, url, token, media, fields = {}, { signal } = {}) {
@@ -737,6 +764,7 @@ async function readPayload(response) {
   const details = responseDiagnostics.get(response);
   try {
     const payload = await response.json();
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Meta response is not a JSON object');
     if (!response.ok) {
       const error = new Error(normalizeMetaError(payload, response.status).message);
       error.meta = normalizeMetaError(payload, response.status);
@@ -748,7 +776,7 @@ async function readPayload(response) {
   } catch (error) {
     recordError(error, { ...details, durationMs: details ? Date.now() - details.startedAt : undefined,
       stage: 'meta-response-json', statusCode: response.status }, details?.secrets);
-    return {};
+    throw new TypeError('fetch failed', { cause: error });
   }
 }
 
@@ -793,7 +821,8 @@ async function sendWithThrottleRetry(send, signal, rateLimiter, url) {
     if (waitMs > MAX_INLINE_THROTTLE_WAIT_MS || attempt >= MAX_INLINE_THROTTLE_RETRIES) {
       throwMetaThrottle(payload, response.status, waitMs);
     }
-    await sleep(waitMs, undefined, { signal });
+    try { await sleep(waitMs, undefined, { signal }); }
+    catch (error) { error.definiteRejection = true; throw error; }
   }
 }
 

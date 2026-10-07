@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { publishDraft } from '../src/publisher.js';
+import { createMetaClient } from '../src/meta-client.js';
 
 const ad = {
   clientId: 'ad-1',
@@ -50,6 +51,81 @@ const draft = {
 };
 
 const image = () => ({ id: 'media-image', mimeType: 'image/jpeg', name: 'image.jpg', content: Buffer.from('image') });
+
+test('a real deadline aborts an in-flight campaign write and preserves uncertain state', async () => {
+  let calls = 0;
+  const client = createMetaClient({ apiVersion: 'v24.0' }, { fetchImpl: async (_url, { signal }) => {
+    calls++;
+    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+  } });
+  // Keep the test process alive while the production timeout intentionally uses unref().
+  const keepAlive = setTimeout(() => {}, 1000);
+  try {
+    const result = await publishDraft({ draft, token: 'fake', runId: 'deadline-real', metaClient: client,
+      getMedia: image, deadlineAt: Date.now() + 40, onDeadline: 'return' });
+    assert.equal(calls, 1);
+    assert.equal(result.nodes[0].status, 'failed');
+    assert.equal(result.nodes[0].error.type, 'UncertainMetaWriteError');
+    assert.ok(!result.nodes.some(node => node.status === 'created' && !node.remoteId));
+  } finally { clearTimeout(keepAlive); }
+});
+
+test('an aborted Ad write remains uncertain and cannot be reset to retry_pending by the deadline', async () => {
+  let adCalls = 0;
+  const client = createMetaClient({ apiVersion: 'v24.0' }, { fetchImpl: async (input, { signal }) => {
+    const edge = new URL(input).pathname.split('/').at(-1);
+    if (edge === 'ads') {
+      adCalls++;
+      return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    }
+    return Response.json(edge === 'adimages' ? { images: { one: { hash: 'hash' } } } : { id: edge });
+  } });
+  const keepAlive = setTimeout(() => {}, 1000);
+  try {
+    const result = await publishDraft({ draft, token: 'fake', runId: 'deadline-ad', metaClient: client,
+      getMedia: image, deadlineAt: Date.now() + 100, onDeadline: 'return' });
+    const node = result.nodes.find(node => node.type === 'ad');
+    assert.equal(adCalls, 1);
+    assert.equal(node.status, 'failed');
+    assert.equal(node.error.type, 'UncertainAdWriteError');
+  } finally { clearTimeout(keepAlive); }
+});
+
+test('deadline cancellation also interrupts a video polling delay', async () => {
+  const started = Date.now();
+  const result = await publishDraft({ draft, token: 'fake', runId: 'deadline-poll', ownerMetaUserId: 'deadline-poll-owner',
+    getMedia: () => ({ id: 'deadline-video', mimeType: 'video/mp4' }),
+    deadlineAt: started + 40, onDeadline: 'return', metaClient: {
+      createCampaign: async () => 'campaign', createAdSet: async () => 'set', uploadVideo: async () => 'video',
+      getVideoStatus: async () => ({ status: { video_status: 'processing' } })
+    } });
+  assert.ok(Date.now() - started < 500);
+  assert.equal(result.deadlineHit, true);
+  assert.equal(result.nodes.find(node => node.type === 'ad').status, 'retry_pending');
+});
+
+test('video processing can exceed two minutes and reuse the saved Video ID after the one-hour wait', async () => {
+  let clock = 0, uploads = 0, ready = false;
+  let saved;
+  const client = {
+    createCampaign: async () => 'campaign', createAdSet: async () => 'set',
+    uploadVideo: async () => { uploads++; return 'video'; },
+    getVideoStatus: async () => ({ status: { video_status: ready ? 'ready' : 'processing' }, thumbnail: { imageUrl: 'https://example.com/thumb' } }),
+    createCreative: async () => 'creative', createAd: async () => 'ad'
+  };
+  const base = { draft, token: 'fake', runId: 'video-long', ownerMetaUserId: 'video-long-owner', metaClient: client,
+    now: () => clock, delay: async ms => { clock += ms; },
+    getMedia: () => ({ id: 'video-long', mimeType: 'video/mp4' }),
+    getMetaVideoId: async () => saved, saveMetaVideoId: async (_o, _m, _a, id) => { saved = id; } };
+  const pending = await publishDraft(base);
+  assert.ok(clock >= 60 * 60_000);
+  assert.equal(pending.nodes.find(node => node.type === 'ad').status, 'retry_pending');
+  assert.equal(pending.nodes.find(node => node.type === 'ad').error.type, 'VideoProcessingPendingError');
+  ready = true;
+  const result = await publishDraft({ ...base, existingNodes: pending.nodes });
+  assert.equal(result.nodes.find(node => node.type === 'ad').status, 'created');
+  assert.equal(uploads, 1);
+});
 
 test('campaign failures retain network codes without storing private cause messages', async () => {
   const error = Object.assign(new TypeError('fetch failed', { cause: { message: 'Bearer private-token' } }), {

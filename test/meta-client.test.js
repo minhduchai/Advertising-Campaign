@@ -500,7 +500,9 @@ test('creates a Page comment with text and an image using the Page bearer token'
   assert.equal(commentId, 'comment-1');
   assert.equal(request.url, 'https://graph.facebook.com/v25.0/123_456/comments');
   assert.equal(request.options.headers.authorization, 'Bearer PAGE-TOKEN');
-  assert.equal(request.options.signal, controller.signal);
+  assert.equal(request.options.signal.aborted, false);
+  controller.abort();
+  assert.equal(request.options.signal.aborted, true, 'the composed request timeout still honors caller cancellation');
   const body = new URLSearchParams(request.options.body);
   assert.equal(body.get('message'), 'Xem ưu đãi https://lgclinic.vn');
   assert.equal(body.get('attachment_url'), 'https://blob.example/image.jpg?signed=1');

@@ -2,6 +2,24 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { prepareWorkflowMedia } from '../src/workflow-media.js';
 
+test('the preparation deadline aborts an in-flight status read and leaves the video pending', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let started;
+  const ready = new Promise(resolve => { started = resolve; });
+  const { base } = harness({ media: { m1: { id: 'm1', mimeType: 'video/mp4' } }, videoIds: { m1: 'video' } });
+  base.metaClient.getVideoStatus = async (_token, _id, { signal }) => {
+    started(signal);
+    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+  };
+  const pending = prepareWorkflowMedia({ ...base, draft: draftWith([{ clientId: 'ad', mediaId: 'm1' }]) });
+  const signal = await ready;
+  t.mock.timers.tick(95_000);
+  assert.equal(signal.aborted, true);
+  const result = await pending;
+  assert.equal(result.pending, true);
+  assert.equal(result.failed, 0);
+});
+
 function draftWith(ads) {
   return { campaigns: [{ clientId: 'c1', adAccountId: 'act_1', adSets: [{ clientId: 's1', ads }] }] };
 }
