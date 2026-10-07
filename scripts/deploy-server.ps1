@@ -49,6 +49,17 @@ cd "$app"
 npm ci --omit=dev
 node --env-file=/home/campaignadmin/.config/campaignbuilder/app.env scripts/migrate-postgres.js
 node --env-file=/home/campaignadmin/.config/campaignbuilder/app.env scripts/migrate-comment-unhide.js
+if systemctl --user is-active --quiet campaignbuilder; then
+  systemctl --user restart campaignbuilder
+  i=0
+  while [ "$i" -lt 20 ]; do
+    if systemctl --user is-active --quiet campaignbuilder && curl -fsS http://127.0.0.1:3000/api/health; then exit 0; fi
+    i=$((i+1))
+    sleep 1
+  done
+  journalctl --user -u campaignbuilder -n 30 --no-pager
+  exit 1
+fi
 oldpid=$(systemctl show campaignbuilder --property=MainPID --value)
 if [ "$oldpid" = 0 ]; then
   echo 'campaignbuilder is not running. Run: sudo systemctl start campaignbuilder'

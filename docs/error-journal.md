@@ -10,6 +10,8 @@ Không lưu body yêu cầu, header Authorization, token hoặc cấu hình môi
 
 Production bật mặc định. `ERROR_JOURNAL_DIRECTORY` đặt thư mục lưu riêng nếu cần; mặc định là `data/error-journal` dưới thư mục ứng dụng. Máy chủ hiện tại dùng `/home/campaignadmin/.local/state/campaignbuilder/error-journal`. File JSONL được ghi nối tiếp, quyền 600, thư mục mới quyền 700. Khởi động lại hoặc deploy không xóa nhật ký. Mỗi tài khoản và log hệ thống giữ một file hiện tại cùng tối đa 3 file xoay vòng, mỗi file khoảng 10 MB; file cũ nhất bị thay thế khi đầy. Trang xem và tải xuống đọc cả các file này. Cần sao lưu riêng nếu muốn lưu lâu dài. Lỗi phản hồi API 4xx được giới hạn chung 60 bản ghi/phút/process; số bị bỏ qua được ghi vào bản ghi 4xx đầu tiên của phút tiếp theo. Lỗi Meta và lỗi máy chủ không chịu giới hạn 4xx này.
 
-Nếu ghi file thất bại, bản ghi đã che thông tin nhạy cảm được gửi vào log dịch vụ với nhãn `[error-journal-write-failed]`; lỗi ghi nhật ký không đổi kết quả lệnh Meta và không làm gửi lại lệnh. Kiểm tra bằng `journalctl -u campaignbuilder` và các log worker trong thư mục state.
+Nếu ghi file thất bại, bản ghi đã che thông tin nhạy cảm được gửi vào log dịch vụ với nhãn `[error-journal-write-failed]`; lỗi ghi nhật ký không đổi kết quả lệnh Meta và không làm gửi lại lệnh. Kiểm tra bằng `journalctl --user -u campaignbuilder` và các log worker trong thư mục state.
 
 Đây là dữ liệu quan sát được, không bảo đảm mọi lỗi đều xác định được nguyên nhân ngay. Lỗi xảy ra trước khi bật cơ chế này không thể khôi phục mã nguyên nhân đã bị bỏ mất. Trang ghi rõ khi chưa có bản ghi hoặc phát hiện dòng nhật ký bị hỏng.
+
+Máy chủ hiện chạy bằng user service `campaignbuilder` của `campaignadmin`: dùng `systemctl --user status/restart campaignbuilder`. Service đã enable và `Linger=yes` để chạy sau logout và khởi động máy. System service cũ đang inactive.
