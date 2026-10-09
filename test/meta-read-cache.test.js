@@ -84,6 +84,20 @@ test('writes and pending video polling are never cached', async () => {
   assert.equal(calls, 4);
 });
 
+test('ready videos without a thumbnail are refreshed until the thumbnail arrives', async t => {
+  const directory = await directoryFor(t);
+  const config = { ...testConfig(), metaReadCacheDirectory: directory };
+  let calls = 0;
+  const fetchImpl = async () => Response.json({ status: { video_status: 'ready' },
+    thumbnails: { data: ++calls === 1 ? [] : [{ uri: 'https://example.com/thumb' }] } });
+  const client = createMetaClient(config, { fetchImpl });
+  assert.equal((await client.getVideoStatus('token', 'video')).thumbnail, undefined);
+  assert.deepEqual(await readdir(directory), []);
+  assert.equal((await client.getVideoStatus('token', 'video')).thumbnail.imageUrl, 'https://example.com/thumb');
+  await createMetaClient(config, { fetchImpl }).getVideoStatus('token', 'video');
+  assert.equal(calls, 2);
+});
+
 test('ready videos survive client restart, but pending and failed videos never persist', async t => {
   const directory = await directoryFor(t);
   const config = { ...testConfig(), metaReadCacheDirectory: directory };

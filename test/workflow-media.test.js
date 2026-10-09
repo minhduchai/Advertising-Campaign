@@ -49,7 +49,8 @@ function harness({ media, videoIds = {}, statusByVideoId = {}, uploadError, stat
         getVideoStatus: async (_token, videoId) => {
           calls.status.push(videoId);
           if (statusError) throw statusError;
-          return { status: { video_status: statusByVideoId[videoId] ?? 'processing' } };
+          return { status: { video_status: statusByVideoId[videoId] ?? 'processing' },
+            thumbnail: { imageUrl: 'https://example.com/thumb' } };
         }
       }
     }
@@ -79,6 +80,19 @@ test('does not upload again when a video id is already stored, and reports ready
 
   assert.deepEqual(result, { status: 'media_ready', pending: false, ready: 1, total: 1, failed: 0 });
   assert.equal(calls.upload.length, 0);
+});
+
+test('a ready video stays pending until its thumbnail arrives without another upload', async () => {
+  const { base, calls } = harness({ media: { m1: { id: 'm1', mimeType: 'video/mp4' } },
+    videoIds: { m1: 'thumbnail-late-video' } });
+  let reads = 0;
+  base.metaClient.getVideoStatus = async () => ({ status: { video_status: 'ready' },
+    thumbnail: ++reads === 1 ? undefined : { imageUrl: 'https://example.com/thumb' } });
+  const draft = draftWith([{ clientId: 'ad', mediaId: 'm1' }]);
+  assert.equal((await prepareWorkflowMedia({ ...base, draft })).pending, true);
+  assert.equal((await prepareWorkflowMedia({ ...base, draft })).pending, false);
+  assert.equal(reads, 2);
+  assert.equal(calls.upload.length + calls.deleted.length + calls.nodes.length, 0);
 });
 
 test('a video that Meta fails to process only fails the ads using it', async () => {

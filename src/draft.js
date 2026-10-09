@@ -232,6 +232,9 @@ export function buildImageCreativeParams(pageId, imageHash, ad) {
 }
 
 export function buildVideoCreativeParams(pageId, videoId, thumbnail, ad) {
+  if (!thumbnail?.imageHash && !thumbnail?.imageUrl) {
+    throw new Error('Video chưa có ảnh đại diện trên Meta; cần chờ ảnh đại diện trước khi tạo quảng cáo.');
+  }
   const videoData = {
     video_id: videoId,
     message: ad.primaryText,
@@ -245,8 +248,7 @@ export function buildVideoCreativeParams(pageId, videoId, thumbnail, ad) {
 
   if (thumbnail.imageHash) {
     videoData.image_hash = thumbnail.imageHash;
-  }
-  if (thumbnail.imageUrl) {
+  } else if (thumbnail.imageUrl) {
     videoData.image_url = thumbnail.imageUrl;
   }
 

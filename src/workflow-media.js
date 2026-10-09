@@ -66,7 +66,7 @@ async function prepareWithDeadline({
       if (now() >= stopStartingAt || signal.aborted) continue;
       const video = await metaClient.getVideoStatus(token, videoId, { signal });
       const status = video.status?.video_status;
-      if (status === 'ready') {
+      if (status === 'ready' && (video.thumbnail?.imageHash || video.thumbnail?.imageUrl)) {
         await rememberReadyVideo(ownerMetaUserId, group.accountId, videoId, video);
         ready += 1;
       } else if (status === 'error') {

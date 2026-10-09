@@ -27,6 +27,7 @@ export function knownReadyVideo(ownerMetaUserId, accountId, videoId) {
 }
 
 export function rememberReadyVideo(ownerMetaUserId, accountId, videoId, video) {
+  if (!video.thumbnail?.imageHash && !video.thumbnail?.imageUrl) return;
   const thumbnail = { imageHash: video.thumbnail?.imageHash, imageUrl: video.thumbnail?.imageUrl };
   return readyMetaVideos.load(JSON.stringify([ownerMetaUserId, accountId, videoId]), READY_VIDEO_TTL_MS, async () => thumbnail);
 }
@@ -898,7 +899,7 @@ async function waitForVideoReady(metaClient, token, videoId, delay, deadlineCont
   while (true) {
     assertPublicationDeadline(deadlineContext);
     if (deadlineContext.now() >= videoDeadlineAt) {
-      const pending = new Error('Video vẫn đang xử lý sau 60 phút; tiếp tục kiểm tra bằng Video ID đã lưu, không tải lại.');
+      const pending = new Error('Video hoặc ảnh đại diện vẫn chưa sẵn sàng sau 60 phút; tiếp tục kiểm tra bằng Video ID đã lưu, không tải lại.');
       pending.name = 'VideoProcessingPendingError';
       pending.code = 'META_VIDEO_PROCESSING_PENDING';
       throw pending;
@@ -914,7 +915,7 @@ async function waitForVideoReady(metaClient, token, videoId, delay, deadlineCont
     );
     assertPublicationDeadline(deadlineContext);
     const status = video.status?.video_status;
-    if (status === 'ready') return video;
+    if (status === 'ready' && (video.thumbnail?.imageHash || video.thumbnail?.imageUrl)) return video;
     if (status === 'error') {
       const error = new Error('Meta không xử lý được video');
       error.code = 'META_VIDEO_PROCESSING_FAILED';

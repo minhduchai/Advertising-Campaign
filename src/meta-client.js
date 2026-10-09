@@ -366,11 +366,11 @@ export function createMetaClient(config, { fetchImpl = fetch, networkRetryDelay 
 
     async getVideoStatus(token, videoId, options = {}) {
       const payload = await fetchImpl.readCache.load(
-        JSON.stringify(['ready-video', graphBaseUrl, token, videoId]), 30 * 60_000,
+        JSON.stringify(['ready-video-thumbnail', graphBaseUrl, token, videoId]), 30 * 60_000,
         () => requestJson(fetchImpl, `${graphBaseUrl}/${videoId}`, {
           fields: 'status,thumbnails'
         }, token, options),
-        { shouldCache: value => value?.status?.video_status === 'ready' }
+        { shouldCache: value => value?.status?.video_status === 'ready' && Boolean(value.thumbnails?.data?.[0]?.uri) }
       );
       const thumbnail = payload.thumbnails?.data?.[0];
       return {

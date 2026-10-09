@@ -423,6 +423,16 @@ test('uses a video thumbnail URL as image_url instead of an image hash', () => {
   assert.equal(videoData.image_hash, undefined);
 });
 
+test('rejects a video creative without a thumbnail before sending it to Meta', () => {
+  for (const thumbnail of [undefined, {}, { imageUrl: '' }]) {
+    assert.throws(() => buildVideoCreativeParams('page_1', 'video_1', thumbnail, ad), /ảnh đại diện/);
+  }
+  const params = buildVideoCreativeParams('page_1', 'video_1', { imageHash: 'hash', imageUrl: 'https://example.com/thumb' }, ad);
+  const videoData = JSON.parse(params.get('object_story_spec')).video_data;
+  assert.equal(videoData.image_hash, 'hash');
+  assert.equal(videoData.image_url, undefined);
+});
+
 test('adds the conversation snapshot to image and video creatives', () => {
   const image = JSON.parse(
     buildImageCreativeParams('page_1', 'hash-1', ad).get('object_story_spec')

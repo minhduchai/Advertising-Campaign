@@ -127,6 +127,26 @@ test('video processing can exceed two minutes and reuse the saved Video ID after
   assert.equal(uploads, 1);
 });
 
+test('publishing waits for a thumbnail after Meta reports video ready', async () => {
+  let reads = 0;
+  const waits = [];
+  const result = await publishDraft({ draft, token: 'fake', runId: 'thumbnail-late', ownerMetaUserId: 'thumbnail-late-owner',
+    getMedia: () => ({ id: 'thumbnail-late-media', mimeType: 'video/mp4' }),
+    getMetaVideoId: async () => 'thumbnail-late-video', delay: async ms => { waits.push(ms); },
+    metaClient: {
+      createCampaign: async () => 'campaign', createAdSet: async () => 'set',
+      getVideoStatus: async () => ({ status: { video_status: 'ready' },
+        thumbnail: ++reads === 1 ? undefined : { imageUrl: 'https://example.com/thumb' } }),
+      createCreative: async (_token, _account, params) => {
+        assert.equal(JSON.parse(params.get('object_story_spec')).video_data.image_url, 'https://example.com/thumb');
+        return 'creative';
+      }, createAd: async () => 'ad'
+    } });
+  assert.equal(reads, 2);
+  assert.deepEqual(waits, [2000]);
+  assert.equal(result.nodes.find(node => node.type === 'ad').status, 'created');
+});
+
 test('campaign failures retain network codes without storing private cause messages', async () => {
   const error = Object.assign(new TypeError('fetch failed', { cause: { message: 'Bearer private-token' } }), {
     networkCodes: ['ECONNRESET']

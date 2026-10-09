@@ -1063,7 +1063,7 @@ test('uploads and polls one Meta video when independent Ads reuse the same media
         uploadedMedia.push(media);
         return 'video-1';
       },
-      getVideoStatus: async () => { statusChecks += 1; return { status: { video_status: 'ready' } }; },
+      getVideoStatus: async () => { statusChecks += 1; return { status: { video_status: 'ready' }, thumbnail: { imageUrl: 'https://example.com/thumb' } }; },
       createCreative: async (_token, _account, params) => `creative-${params.get('name')}`,
       createAd: async (_token, _account, params) => `ad-${params.get('name')}`
     }
