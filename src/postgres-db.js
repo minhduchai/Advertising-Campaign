@@ -43,6 +43,15 @@ export function createPostgresDatabase(sql) {
       `)[0]);
     },
 
+    async listAccessProfiles() {
+      const rows = await sql`
+        SELECT meta_user_id AS id, MAX(meta_user_name) AS name, MAX(updated_at) AS last_seen
+        FROM sessions WHERE meta_user_id IS NOT NULL
+        GROUP BY meta_user_id ORDER BY last_seen DESC LIMIT 200
+      `;
+      return rows.map(row => ({ id: row.id, name: row.name ?? '', lastSeen: Number(row.last_seen) }));
+    },
+
     async attachMetaUser(sessionId, metaUser) {
       const user = typeof metaUser === 'string' ? { id: metaUser, name: null } : metaUser;
       return mapSession((await sql`

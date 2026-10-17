@@ -39,10 +39,22 @@ ALLOWED_USER_ID=1643641244
 ALLOWED_GROUP_IDS=-5409953650
 FILE_ROOT=\\192.168.1.6\marketing
 BOT_API_BASE=http://127.0.0.1:8081
-APP_URL=https://creative-campaign-lgclinic.vercel.app
+APP_URL=https://setads.click
 TELEGRAM_UPLOAD_WORKER_SECRET=khóa_worker_trùng_với_Vercel
+GEMINI_API_KEY=khóa_API_lấy_từ_Google_AI_Studio
+GEMINI_MODEL=gemini-3.8-flash
 
 Không cần Upload Agent và không cần Node.js trên máy công ty.
+
+Bot nhận đường dẫn Windows (\\server\share), macOS (//server/share), smb:// và file://.
+Nếu đường dẫn sai, bot tự tìm gần đúng. Có thể dùng /find <tên hoặc link file>.
+Tìm tên file dùng công thức 50% độ giống toàn tên, 30% token, 10% mã ngày và 10% tháng chạy.
+Chỉ tìm trong thư mục đích và một cấp thư mục con. Nếu sai tên thư mục, chọn nhánh gần giống trong tối đa hai cấp cần sửa.
+Không có kết quả trong thư mục đích thì không quét sang các tháng khác.
+Chỉ hiển thị tối đa 5 file đạt 55%; ứng viên đầu tiên đạt 90% ngay trong thư mục đích có nút ưu tiên ⭐.
+Phần tìm file chờ tối đa 3 giây. SMB có thể vẫn đang chờ Windows ở luồng nền; thời gian Telegram trả tin còn tùy mạng.
+Luồng tìm nhanh không tự gọi Gemini. Các khóa GEMINI_* cũ có thể giữ nguyên nhưng không được dùng trong luồng này.
+Đồng hồ cập nhật trên cùng một tin nhắn; danh sách kết quả gửi riêng khi tìm xong.
 
 5. Cấu hình Cloudflare R2
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 import ntpath
 import os
 
+from file_search import normalize_shared_path
+
 
 class PathOutsideRoot(ValueError):
     """Đường dẫn nằm ngoài thư mục được phép."""
@@ -20,7 +22,14 @@ class InvalidTargetType(ValueError):
 
 def resolve_user_path(raw_path: str, root: str) -> str:
     root_normalized = ntpath.normpath(root)
-    raw = (raw_path or "").strip().strip('"')
+    raw = normalize_shared_path(raw_path)
+
+    if root_normalized.startswith("\\\\") and raw.startswith("\\") and not raw.startswith("\\\\"):
+        possible_unc = "\\" + raw
+        root_case = ntpath.normcase(root_normalized)
+        possible_case = ntpath.normcase(ntpath.normpath(possible_unc))
+        if possible_case == root_case or possible_case.startswith(root_case + "\\"):
+            raw = possible_unc
 
     if raw.startswith(("\\\\?\\", "\\\\.\\")):
         raise PathOutsideRoot("Đường dẫn thiết bị không được phép.")

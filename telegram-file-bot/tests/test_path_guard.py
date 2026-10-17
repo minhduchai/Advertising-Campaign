@@ -22,6 +22,10 @@ ROOT = r"\\192.168.1.6\marketing"
         (r"CHUNG\THIET KE\Danh", r"\\192.168.1.6\marketing\CHUNG\THIET KE\Danh"),
         (r"CHUNG\THIET KE\Danh\THÁNG 8", r"\\192.168.1.6\marketing\CHUNG\THIET KE\Danh\THÁNG 8"),
         (r"\\192.168.1.6\marketing\CHUNG\file.psd", r"\\192.168.1.6\marketing\CHUNG\file.psd"),
+        ("//192.168.1.6/marketing/CHUNG/file.psd", r"\\192.168.1.6\marketing\CHUNG\file.psd"),
+        ("smb://192.168.1.6/marketing/CHUNG/file%20moi.psd", r"\\192.168.1.6\marketing\CHUNG\file moi.psd"),
+        ("file://192.168.1.6/marketing/CHUNG/file.psd", r"\\192.168.1.6\marketing\CHUNG\file.psd"),
+        (r"\192.168.1.6\marketing\CHUNG\file.psd", r"\\192.168.1.6\marketing\CHUNG\file.psd"),
     ],
 )
 def test_resolve_user_path_accepts_relative_full_and_unicode(raw, expected):

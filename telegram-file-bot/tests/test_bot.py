@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from bot import BrowserStore, Config, TransferQueue, handle_update, parse_command
+from bot import BrowserStore, Config, SearchProgress, TransferQueue, handle_update, parse_command
 from telegram_app_upload import TelegramUploadIntentStore
 
 
@@ -18,6 +18,12 @@ class FakeApi:
     def send_message(self, chat_id, text, reply_markup=None, parse_mode=None):
         self.messages.append((chat_id, text))
         self.keyboards.append(reply_markup)
+        return {"message_id": len(self.messages)}
+
+    def edit_message_text(self, chat_id, message_id, text):
+        self.messages.append((chat_id, text))
+        self.keyboards.append(None)
+        return {"message_id": message_id}
 
     def send_document(self, chat_id, path, caption=None, parse_mode=None):
         self.documents.append((chat_id, path))
@@ -58,6 +64,22 @@ def test_parse_command_preserves_spaces_and_unicode():
         "/get",
         "CHUNG\\THIET KE\\Danh\\THÁNG 8\\file.psd",
     )
+
+
+def test_search_progress_updates_elapsed_time_and_finishes(monkeypatch):
+    moments = iter([100.0, 107.0, 112.0])
+    monkeypatch.setattr("bot.time.monotonic", lambda: next(moments))
+    api = FakeApi()
+    progress = SearchProgress(api, 999, autostart=False)
+
+    progress.tick()
+    progress.finish()
+
+    assert [text for _, text in api.messages] == [
+        "🔎 Bot đang tìm file… 0 giây",
+        "🔎 Bot đang tìm file… 7 giây",
+        "✅ Tìm xong sau 12 giây",
+    ]
 
 
 def test_unauthorized_user_is_denied(tmp_path: Path):
@@ -249,6 +271,59 @@ def test_get_sends_valid_file(tmp_path: Path):
     assert api.captions == [("@dominic, Bot gửi file nha", "HTML")]
 
 
+def test_find_suggests_similar_file_with_download_button(tmp_path: Path):
+    source = tmp_path / "VIDEO_1109_TUYETVAN_CFURANHCUOI5000K.mp4"
+    source.write_bytes(b"video")
+    api = FakeApi()
+    store = BrowserStore()
+    config = Config("token", 123, str(tmp_path), "http://127.0.0.1:8081")
+
+    handle_update(
+        make_update(text="/find video 1109 tuyet van cfu ranh cuoi 5000k.mp4"),
+        api,
+        config,
+        threading.Lock(),
+        store,
+    )
+
+    assert "Bot đang tìm file" in api.messages[0][1]
+    assert "Tìm xong" in api.messages[1][1]
+    assert source.name in api.messages[2][1]
+    assert api.keyboards[2]["inline_keyboard"][0][0]["callback_data"].startswith("browse:")
+
+
+def test_missing_pasted_path_falls_back_to_similar_search(tmp_path: Path):
+    source = tmp_path / "quang-cao-jovena.mp4"
+    source.write_bytes(b"video")
+    api = FakeApi()
+    config = Config("token", 123, str(tmp_path), "http://127.0.0.1:8081")
+
+    handle_update(
+        make_update(text=str(tmp_path / "quang cao jovenaa.mp4")),
+        api,
+        config,
+        threading.Lock(),
+        BrowserStore(),
+    )
+
+    assert "Bot đang tìm file" in api.messages[0][1]
+    assert "Tìm xong" in api.messages[1][1]
+    assert source.name in api.messages[2][1]
+
+
+def test_missing_pasted_path_preserves_folder_spaces_and_prioritizes_near_match(tmp_path):
+    folder = tmp_path / "VIDEO FINAL" / "TRIET LONG"
+    folder.mkdir(parents=True)
+    source = folder / "VIDEO_0910_NGAN_KHOA_DANH_KHOAA_NGHIA_TRIETBIKINI990KNANNHAN_T10+T11.mp4"
+    source.write_bytes(b"video")
+    api = FakeApi()
+    config = Config("token", 123, str(tmp_path), "http://127.0.0.1:8081", gemini_api_key="unused")
+    handle_update(make_update(text=str(source).replace("990K", "99K")), api, config, threading.Lock(), BrowserStore())
+    assert source.name in api.messages[-1][1]
+    assert "⭐ Ưu tiên" in api.messages[-1][1]
+    assert api.keyboards[-1]["inline_keyboard"][0][0]["text"].startswith("⭐")
+
+
 def test_pasting_full_file_path_sends_file(tmp_path: Path):
     source = tmp_path / "banner trực tiếp.png"
     source.write_bytes(b"png")
@@ -408,7 +483,7 @@ def test_transfer_queue_uploads_to_app_and_tags_requester(tmp_path: Path):
     queue = TransferQueue(
         api,
         app_uploader=app_uploader,
-        app_url="https://creative-campaign-lgclinic.vercel.app",
+        app_url="https://setads.click",
         autostart=False,
     )
     queue.enqueue(10, {"id": 1, "username": "alice"}, str(source), "app", "intent-1")

@@ -7,6 +7,7 @@ $files = @(
     'telegram_app_upload.py',
     'telegram_api.py',
     'path_guard.py',
+    'file_search.py',
     'requirements.txt',
     'run-bot.cmd',
     'HUONG-DAN.txt',
@@ -39,7 +40,9 @@ if (-not (Test-Path -LiteralPath $python)) {
     (Join-Path $targetRoot 'bot.py') `
     (Join-Path $targetRoot 'telegram_app_upload.py') `
     (Join-Path $targetRoot 'telegram_api.py') `
-    (Join-Path $targetRoot 'path_guard.py')
+    (Join-Path $targetRoot 'path_guard.py') `
+    (Join-Path $targetRoot 'file_search.py')
+if ($LASTEXITCODE -ne 0) { throw 'Kiem tra ma Python that bai; chua khoi dong lai bot.' }
 
 $taskName = 'Telegram Company File Bot'
 if (Get-ScheduledTask -TaskName 'Telegram Company File Bot Native' -ErrorAction SilentlyContinue | Where-Object { $_.State -ne 'Disabled' }) {

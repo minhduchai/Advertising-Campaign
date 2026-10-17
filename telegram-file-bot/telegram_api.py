@@ -40,7 +40,7 @@ class TelegramApi:
         text: str,
         reply_markup: dict | None = None,
         parse_mode: str | None = None,
-    ) -> None:
+    ) -> dict:
         data = {"chat_id": chat_id, "text": text}
         if reply_markup is not None:
             data["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
@@ -51,7 +51,15 @@ class TelegramApi:
             data=data,
             timeout=30,
         )
-        self._result(response)
+        return self._result(response)
+
+    def edit_message_text(self, chat_id: int, message_id: int, text: str) -> dict:
+        response = self._session.post(
+            f"{self._base}/editMessageText",
+            data={"chat_id": chat_id, "message_id": message_id, "text": text},
+            timeout=30,
+        )
+        return self._result(response)
 
     def answer_callback_query(self, callback_id: str, text: str = "") -> None:
         response = self._session.post(

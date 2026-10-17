@@ -9,7 +9,7 @@ $secret = [Convert]::ToBase64String($secretBytes)
 $secret
 ```
 
-Đặt cùng giá trị vào `WORKFLOW_SHARED_SECRET` của application server và Cloudflare. `APP_SERVER_BASE_URL` trong `cloudflare/wrangler.jsonc` phải trỏ tới `https://advertisingserver.tailac4f15.ts.net`.
+Đặt cùng giá trị vào `WORKFLOW_SHARED_SECRET` của application server và Cloudflare. `APP_SERVER_BASE_URL` trong `cloudflare/wrangler.jsonc` phải trỏ tới `https://setads.click`.
 
 ## Deploy Workflow
 
@@ -31,4 +31,4 @@ Deploy lại server bằng `scripts/deploy-server.ps1`.
 
 Đặt `WORKFLOW_ENABLED=false` trong environment của service rồi deploy lại server. Không xóa Workflow đang chạy cho tới khi các lượt hiện tại kết thúc.
 
-Hiện production giữ `WORKFLOW_ENABLED=false` vì Cloudflare chưa kết nối ổn định tới origin Tailscale; quy trình tạo Ads chạy trực tiếp trên application server.
+Hiện production giữ `WORKFLOW_ENABLED=false`; quy trình tạo Ads chạy trực tiếp trên application server. Tunnel `setads.click` đã hoạt động nhưng Worker chưa được bật lại.

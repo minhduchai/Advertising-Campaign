@@ -1,5 +1,9 @@
 .env
 data/
+data-preview/
+*.sqlite
+*.sqlite-*
+*.db
 coverage/
 .vercel/
 .env.production.local
@@ -20,6 +24,10 @@ review-backup-*/
 .old-frontend-*/
 test-output.txt
 .agents/
+.claude/
+.audit-venv/
+.venv/
+.pytest_cache/
 .superpowers/
 __pycache__/
 *.pyc

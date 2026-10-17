@@ -69,6 +69,8 @@ export function loadConfig(environment = process.env) {
   }
 
   const runtimeDirectory = resolve(environment.RUNTIME_DIRECTORY ?? 'data');
+  const accessAdminMetaUserIds = String(environment.ACCESS_ADMIN_META_USER_IDS ?? '').split(',').map(id => id.trim()).filter(Boolean);
+  if (accessAdminMetaUserIds.some(id => !/^\d{1,40}$/.test(id))) throw new Error('Invalid ACCESS_ADMIN_META_USER_IDS');
   if (!databaseUrl) {
     mkdirSync(runtimeDirectory, { recursive: true });
   }
@@ -80,6 +82,8 @@ export function loadConfig(environment = process.env) {
     secrets: Object.entries(environment).filter(([key]) => /SECRET|TOKEN|PASSWORD|DATABASE_URL|ACCESS_KEY|ENCRYPTION_KEY/.test(key)).map(([, value]) => value) });
 
   return {
+    accessAdminMetaUserIds,
+    accessControlFile: resolve(environment.ACCESS_CONTROL_FILE?.trim() || `${runtimeDirectory}/access-users.json`),
     errorJournalDirectory,
     appId: environment.META_APP_ID,
     appSecret: environment.META_APP_SECRET,

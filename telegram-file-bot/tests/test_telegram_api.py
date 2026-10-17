@@ -70,6 +70,20 @@ def test_send_message_serializes_inline_keyboard():
     assert session.calls[0][2]["data"]["reply_markup"] == '{"inline_keyboard": [[{"text": "⬇ file", "callback_data": "browse:abc"}]]}'
 
 
+def test_edit_message_text_updates_existing_message():
+    session = FakeSession({"ok": True, "result": {"message_id": 9}})
+    api = TelegramApi("http://127.0.0.1:8081", "secret-token", session)
+
+    api.edit_message_text(123, 9, "Đang tìm 10 giây")
+
+    assert session.calls[0][1].endswith("/editMessageText")
+    assert session.calls[0][2]["data"] == {
+        "chat_id": 123,
+        "message_id": 9,
+        "text": "Đang tìm 10 giây",
+    }
+
+
 def test_send_document_streams_binary_file_and_closes_it(tmp_path: Path):
     source = tmp_path / "thiết kế.psd"
     source.write_bytes(b"photoshop")

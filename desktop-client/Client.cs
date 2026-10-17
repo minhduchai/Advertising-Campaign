@@ -11,7 +11,7 @@ using System.Windows.Forms;
 
 internal static class Client
 {
-    private const string Server = "https://advertisingserver.tailac4f15.ts.net/";
+    private const string Server = "https://setads.click/";
 
     [STAThread]
     private static int Main(string[] args)

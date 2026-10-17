@@ -897,6 +897,22 @@ test('applies a tool audience with a namespaced id and detaches without losing t
   assert.deepEqual(adSet.detailedTargeting, template.content.detailedTargeting);
 });
 
+test('does not allow Campaign preset Custom Audience ids while account resources are not loaded', () => {
+  const snapshot = {
+    sourceAdAccountId: 'act_1',
+    includedCustomAudienceIds: ['ca-include'],
+    excludedCustomAudienceIds: ['ca-exclude']
+  };
+
+  const compatibility = toolAudienceTemplateCompatibility(snapshot, 'act_1', [], false);
+  const allowedIds = new Set(compatibility.allowedCustomAudienceIds);
+
+  assert.deepEqual(compatibility.allowedCustomAudienceIds, []);
+  assert.deepEqual(snapshot.includedCustomAudienceIds.filter((id) => allowedIds.has(id)), []);
+  assert.deepEqual(snapshot.excludedCustomAudienceIds.filter((id) => allowedIds.has(id)), []);
+  assert.deepEqual(compatibility.skippedCustomAudienceIds, ['ca-include', 'ca-exclude']);
+});
+
 test('creates Vietnam targeting and moves a region between include and exclude', () => {
   const adSet = createAdSet(() => 'id');
   const region = {

@@ -24,9 +24,11 @@ Trong .env:
 - ALLOWED_GROUP_IDS=-5409953650 (group cũ; thay nếu đã đổi group).
 - FILE_ROOT=\\192.168.1.6\marketing
 - BOT_API_BASE=http://127.0.0.1:8081
-- APP_URL giữ giá trị mẫu nếu ứng dụng vẫn dùng tên miền cũ.
+- APP_URL=https://setads.click
 - TELEGRAM_UPLOAD_WORKER_SECRET: khóa trùng với biến cùng tên trên Vercel.
   Nếu chưa lấy lại được, để trống: bot chat vẫn dùng được, chức năng app giao đường dẫn cho máy công ty chưa hoạt động.
+- GEMINI_API_KEY: khóa lấy từ Google AI Studio (tùy chọn, dùng khi bot cần phân tích link khó).
+- GEMINI_MODEL=gemini-3.8-flash
 
 Trong docker.env:
 - TELEGRAM_API_ID và TELEGRAM_API_HASH: lấy từ my.telegram.org > API development tools bằng tài khoản đã tạo API trước đây.

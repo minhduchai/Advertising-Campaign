@@ -22,6 +22,13 @@ test('loads the Facebook Login for Business configuration ID', () => {
   assert.equal(config.loginConfigId, 'login-config-id');
 });
 
+test('loads private app admin IDs and rejects malformed IDs', () => {
+  const config = loadConfig(validEnvironment({ ACCESS_ADMIN_META_USER_IDS: '123, 456', ACCESS_CONTROL_FILE: '' }));
+  assert.deepEqual(config.accessAdminMetaUserIds, ['123', '456']);
+  assert.match(config.accessControlFile, /access-users\.json$/);
+  assert.throws(() => loadConfig(validEnvironment({ ACCESS_ADMIN_META_USER_IDS: 'invalid' })), /ACCESS_ADMIN_META_USER_IDS/);
+});
+
 test('rejects configuration when the Meta app secret is missing', () => {
   assert.throws(
     () => loadConfig({ META_APP_ID: 'app-id' }),

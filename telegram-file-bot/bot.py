@@ -12,6 +12,8 @@ import threading
 import time
 from dataclasses import dataclass
 
+from file_search import find_file_matches, normalize_shared_path
+
 from path_guard import (
     FileTooLarge,
     InvalidTargetType,
@@ -31,6 +33,7 @@ HELP = (
     "/status - kiểm tra bot và ổ mạng\n"
     "/ls [đường dẫn] - liệt kê thư mục\n"
     "/get <đường dẫn file> - gửi file\n"
+    "/find <tên hoặc link file> - tìm file gần đúng\n"
     "Hoặc dán trực tiếp đường dẫn file/thư mục từ ổ marketing."
 )
 
@@ -42,8 +45,10 @@ class Config:
     file_root: str
     bot_api_base: str
     allowed_group_ids: frozenset[int] = frozenset()
-    app_url: str = "https://creative-campaign-lgclinic.vercel.app"
+    app_url: str = "https://setads.click"
     telegram_upload_worker_secret: str = ""
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-3.8-flash"
 
 
 @dataclass(frozen=True)
@@ -74,6 +79,44 @@ class BrowserStore:
                 self._items.pop(key, None)
             item = self._items.get(token)
         return item[1] if item else None
+
+
+class SearchProgress:
+    def __init__(self, api, chat_id: int, interval: int = 1, autostart: bool = True):
+        self.api = api
+        self.chat_id = chat_id
+        self.interval = interval
+        self.started = time.monotonic()
+        self.stopped = threading.Event()
+        self._edit_lock = threading.Lock()
+        result = api.send_message(chat_id, "🔎 Bot đang tìm file… 0 giây")
+        self.message_id = int((result or {}).get("message_id", 0))
+        if autostart and self.message_id:
+            threading.Thread(target=self._run, daemon=True, name="search-progress").start()
+
+    def tick(self) -> None:
+        with self._edit_lock:
+            if not self.stopped.is_set():
+                elapsed = max(0, int(time.monotonic() - self.started))
+                self.api.edit_message_text(self.chat_id, self.message_id, f"🔎 Bot đang tìm file… {elapsed} giây")
+
+    def _run(self) -> None:
+        while not self.stopped.wait(self.interval):
+            try:
+                self.tick()
+            except Exception:
+                logging.exception("Không cập nhật được thời gian tìm file")
+
+    def finish(self, success: bool = True) -> None:
+        self.stopped.set()
+        if self.message_id:
+            with self._edit_lock:
+                elapsed = max(0, int(time.monotonic() - self.started))
+                status = "✅ Tìm xong" if success else "⚠️ Dừng tìm"
+                try:
+                    self.api.edit_message_text(self.chat_id, self.message_id, f"{status} sau {elapsed} giây")
+                except Exception:
+                    logging.exception("Không cập nhật được trạng thái tìm file")
 
 
 @dataclass(frozen=True)
@@ -284,6 +327,32 @@ def render_directory(chat_id: int, target: str, api, config: Config, store: Brow
     api.send_message(chat_id, text, {"inline_keyboard": keyboard})
 
 
+def suggest_files(chat_id: int, raw: str, api, config: Config, store: BrowserStore | None) -> None:
+    progress = SearchProgress(api, chat_id)
+    success = False
+    try:
+        matches = find_file_matches(config.file_root, raw)
+        success = True
+    except (TimeoutError, OSError) as exc:
+        api.send_message(chat_id, str(exc) if isinstance(exc, TimeoutError) else "Không đọc được thư mục mạng. Anh kiểm tra kết nối và quyền truy cập nhé.")
+        return
+    finally:
+        progress.finish(success)
+    if not matches:
+        api.send_message(chat_id, "Không có file đạt mức tương đồng 55% trong phạm vi thư mục này. Anh kiểm tra lại thư mục hoặc tên file nhé.")
+        return
+    keyboard = []
+    lines = ["Không thấy đúng đường dẫn. Bot tìm được các file gần giống:"]
+    for match in matches:
+        path = match.path
+        priority = "⭐ Ưu tiên · " if match.is_exact_alternative else ""
+        lines.append(f"• {priority}{ntpath.basename(path)} ({match.score:.0%})")
+        if store:
+            token = store.add("download", path)
+            keyboard.append([{"text": f"{'⭐' if match.is_exact_alternative else '⬇'} {ntpath.basename(path)}"[:60], "callback_data": f"browse:{token}"}])
+    api.send_message(chat_id, "\n".join(lines), {"inline_keyboard": keyboard} if keyboard else None)
+
+
 def handle_update(
     update: dict,
     api,
@@ -401,16 +470,19 @@ def handle_update(
             else:
                 entries, truncated = list_directory(target)
                 api.send_message(chat_id, format_listing(target, entries, truncated))
-        elif command == "/get":
+        elif command in {"/get", "/find"}:
             if not argument:
-                api.send_message(chat_id, "Cách dùng: /get <đường dẫn file>")
+                api.send_message(chat_id, f"Cách dùng: {command} <đường dẫn hoặc tên file>")
+                return
+            if command == "/find":
+                suggest_files(chat_id, argument, api, config, browser_store)
                 return
             target = resolve_user_path(argument, config.file_root)
             if transfer_queue:
                 enqueue_file(chat_id, sender, target, api, transfer_queue, "telegram")
             else:
                 send_file(chat_id, target, api, transfer_lock, sender)
-        elif ntpath.isabs(text.strip().strip('"')):
+        elif ntpath.isabs(normalize_shared_path(text)):
             target = resolve_user_path(text, config.file_root)
             if os.path.isdir(target):
                 if browser_store:
@@ -438,7 +510,7 @@ def handle_update(
     except PathOutsideRoot as exc:
         api.send_message(chat_id, f"Từ chối đường dẫn: {exc}")
     except FileNotFoundError:
-        api.send_message(chat_id, "Không tìm thấy file hoặc thư mục.")
+        suggest_files(chat_id, argument if command in {"/get", "/ls"} else text, api, config, browser_store)
     except (FileTooLarge, InvalidTargetType) as exc:
         api.send_message(chat_id, str(exc))
     except Exception:
@@ -465,8 +537,10 @@ def load_config() -> Config:
         os.environ["FILE_ROOT"],
         os.environ["BOT_API_BASE"],
         group_ids,
-        os.getenv("APP_URL", "https://creative-campaign-lgclinic.vercel.app"),
+        os.getenv("APP_URL", "https://setads.click"),
         os.getenv("TELEGRAM_UPLOAD_WORKER_SECRET", ""),
+        os.getenv("GEMINI_API_KEY", ""),
+        os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
     )
 
 

@@ -11,7 +11,7 @@ import {
 test('enables demo resources only on local preview hosts', () => {
   assert.equal(shouldUseLocalDemoResources({ hostname: 'localhost', search: '' }, { status: 401 }), true);
   assert.equal(shouldUseLocalDemoResources({ hostname: '127.0.0.1', search: '?demoResources=1' }), true);
-  assert.equal(shouldUseLocalDemoResources({ hostname: 'advertisingserver.tailac4f15.ts.net', search: '?demoResources=1' }, { status: 401 }), false);
+  assert.equal(shouldUseLocalDemoResources({ hostname: 'setads.click', search: '?demoResources=1' }, { status: 401 }), false);
   assert.equal(shouldUseLocalDemoResources({ hostname: 'localhost', search: '' }, { status: 500 }), false);
 });
 

@@ -82,7 +82,7 @@ exit 1
   & ssh -i $KeyPath -o BatchMode=yes $Server $remoteScript
   if ($LASTEXITCODE -ne 0) { throw 'Server restart or health check failed.' }
 
-  Write-Host 'Deployment completed: https://advertisingserver.tailac4f15.ts.net'
+  Write-Host 'Deployment completed: https://setads.click'
 }
 finally {
   if (Test-Path -LiteralPath $archivePath) {

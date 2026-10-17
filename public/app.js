@@ -2634,18 +2634,29 @@ async function handleCampaignPresetClick(action, clientId, control) {
   }
 
   if (action === 'apply-campaign-preset') {
-    const preset = campaignPresets().find((entry) => entry.id === control.dataset.presetId);
+    const campaignId = campaign.clientId;
+    const adAccountId = campaign.adAccountId;
+    const presetId = control.dataset.presetId;
+    const preset = campaignPresets().find((entry) => entry.id === presetId);
     if (!preset) return true;
     const missingReference = campaignPresetMissingReference(preset);
     if (missingReference) {
       showToast(missingReference);
       return true;
     }
-    const audienceWarning = applyPresetToCampaign(campaign, preset);
-    state.ui.campaignPresetSelectionByCampaignId[campaign.clientId] = preset.id;
+    const accountResources = await ensureAccountResourcesForNode(campaignId);
+    if (!accountResources?.loaded) {
+      showToast('Chưa tải được tài nguyên tài khoản; không thể áp dụng cấu hình.');
+      return true;
+    }
+    const currentMatch = findNode(state, campaignId);
+    const currentPreset = campaignPresets().find((entry) => entry.id === presetId);
+    if (currentMatch?.type !== 'campaign' || currentMatch.node.adAccountId !== adAccountId || !currentPreset) return true;
+    const audienceWarning = applyPresetToCampaign(currentMatch.node, currentPreset);
+    state.ui.campaignPresetSelectionByCampaignId[campaignId] = presetId;
     render();
     await validateCurrentDraft();
-    showToast(`Đã áp dụng cấu hình “${preset.name}” cho toàn bộ Campaign.${audienceWarning ? ` ${audienceWarning}` : ''}`);
+    showToast(`Đã áp dụng cấu hình “${currentPreset.name}” cho toàn bộ Campaign.${audienceWarning ? ` ${audienceWarning}` : ''}`);
     return true;
   }
 
@@ -2807,7 +2818,8 @@ function campaignPresetAudience(campaign, content) {
   const compatibility = toolAudienceTemplateCompatibility(
     { content: content.audienceContent },
     campaign.adAccountId,
-    campaignResources.customAudiences ?? []
+    campaignResources.customAudiences ?? [],
+    campaignResources.loaded
   );
   const allowedIds = new Set(compatibility.allowedCustomAudienceIds ?? []);
   const linkedTemplateAvailable = isToolAudienceTemplateId(content.audienceTemplateId)

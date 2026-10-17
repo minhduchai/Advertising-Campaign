@@ -48,6 +48,7 @@ import { createWorkflowDispatcher } from './workflow-dispatcher.js';
 import { createTelegramUploadAuth } from './telegram-upload-auth.js';
 import { createMetaRequestCache } from './meta-request-cache.js';
 import { createAddressGeocoder } from './address-geocoder.js';
+import { createAccessControl, sendAccessNotFound } from './access-control.js';
 import { withErrorContext, setErrorContext, recordError, readErrorJournal, iterateErrorJournal, renderErrorJournal } from './error-journal.js';
 
 const projectDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -80,6 +81,7 @@ export function isLocalMediaRequestTooLarge(contentLength) {
 }
 
 export function createRequestHandler({ config, metaClient, db, mediaStore, addressGeocoder = createAddressGeocoder(config) }) {
+  const access = createAccessControl(config);
   const workflowDispatcher = createWorkflowDispatcher({ config });
   const telegramUploadAuth = createTelegramUploadAuth({
     secret: config.sessionSecret,
@@ -204,13 +206,45 @@ export function createRequestHandler({ config, metaClient, db, mediaStore, addre
           mediaStore,
           action: telegramMultipartAction,
           telegramUploadAuth,
-          allowedMetaUserIds: config.telegramUploadAllowedMetaUserIds
+          allowedMetaUserIds: new Set([...(config.telegramUploadAllowedMetaUserIds ?? [])].filter(id => access.allows(id)))
         });
         return;
       }
 
       const session = await getOrCreateSession(request, response, config, db);
       setErrorContext({ ownerMetaUserId: session.metaUserId });
+      if (access.enabled) {
+        response.setHeader('Cache-Control', 'private, no-store');
+        const authRoutes = new Set(['/api/auth/meta/start', '/api/auth/meta/callback', '/api/auth/meta/disconnect']);
+        if (!authRoutes.has(url.pathname) && !access.allows(session.metaUserId)) {
+          if (url.pathname === '/' && !session.metaUserId) {
+            return await sendPublicFile(response, publicDirectory, 'access-login.html');
+          }
+          return sendAccessNotFound(response);
+        }
+      }
+      if (url.pathname === '/admin/access' || url.pathname === '/access-admin.js' || url.pathname === '/api/admin/access') {
+        if (!access.isAdmin(session.metaUserId)) return sendAccessNotFound(response);
+        if (request.method === 'GET' && url.pathname !== '/api/admin/access') {
+          response.setHeader('Content-Security-Policy', "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+          return await sendPublicFile(response, publicDirectory, url.pathname === '/admin/access' ? 'access-admin.html' : 'access-admin.js');
+        }
+        if (request.method === 'GET') {
+          const profiles = await db.listAccessProfiles();
+          return sendJson(response, 200, { users: access.list(), profiles });
+        }
+        if (url.pathname !== '/api/admin/access' || request.method !== 'POST' || request.headers['x-access-management'] !== '1'
+          || !String(request.headers['content-type'] ?? '').startsWith('application/json')
+          || request.headers.origin && request.headers.origin !== new URL(config.redirectUri).origin) {
+          return sendAccessNotFound(response);
+        }
+        const input = await readJson(request, 4096);
+        if (input?.allowed === true && !(await db.listAccessProfiles()).some(profile => profile.id === input.metaUserId)) {
+          return sendJson(response, 400, { error: 'Chọn tài khoản đã đăng nhập vào ứng dụng. ID trong link Facebook không phải ID đăng nhập của ứng dụng.' });
+        }
+        access.update(input?.metaUserId, input?.allowed, { label: input?.label, facebookUrl: input?.facebookUrl });
+        return sendJson(response, 200, { ok: true });
+      }
 
       if (request.method === 'GET' && (url.pathname === '/api/errors' || /^\/api\/runs\/[^/]+\/errors$/.test(url.pathname))) {
         if (!session.metaUserId) return sendJson(response, 401, { error: 'Hãy kết nối Meta để đọc nhật ký lỗi.' });
@@ -368,7 +402,7 @@ export function createRequestHandler({ config, metaClient, db, mediaStore, addre
       }
 
       if (url.pathname === '/api/auth/meta/callback') {
-        await handleOAuthCallback({ url, response, session, db, config, metaClient, metaRequestCache });
+        await handleOAuthCallback({ url, response, session, db, config, metaClient, metaRequestCache, access });
         return;
       }
 
@@ -622,7 +656,7 @@ export function createRequestHandler({ config, metaClient, db, mediaStore, addre
   }
 }
 
-async function handleOAuthCallback({ url, response, session, db, config, metaClient, metaRequestCache }) {
+async function handleOAuthCallback({ url, response, session, db, config, metaClient, metaRequestCache, access }) {
   const code = url.searchParams.get('code');
   const state = url.searchParams.get('state');
   if (!code || !state) {
@@ -638,6 +672,10 @@ async function handleOAuthCallback({ url, response, session, db, config, metaCli
 
   const { accessToken } = await metaClient.exchangeCode(code);
   const profile = await metaClient.getProfile(accessToken);
+  if (!access.allows(profile.id)) {
+    await db.attachMetaUser(session.id, profile);
+    return sendAccessNotFound(response);
+  }
   await db.upsertConnection({
     metaUserId: profile.id,
     metaUserName: profile.name,
@@ -2210,6 +2248,7 @@ async function handleInternalWorkflowRoute({ request, response, url, config, db,
   });
   const run = await db.getRun(runId);
   if (!run) return sendJson(response, 404, { error: 'Run not found' });
+  if (!createAccessControl(config).allows(run.ownerMetaUserId)) return sendAccessNotFound(response);
   const workflowToken = String(request.headers['x-workflow-token'] ?? '').trim();
   if (workflowToken) {
     const renewed = await db.renewWorkflowLease(runId, workflowToken, Date.now(), WORKFLOW_LEASE_TTL_MS);

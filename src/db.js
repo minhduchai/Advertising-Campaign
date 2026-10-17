@@ -223,6 +223,14 @@ export function createSqliteDatabase(path) {
       return row ? mapSession(row) : null;
     },
 
+    listAccessProfiles() {
+      return database.prepare(`
+        SELECT meta_user_id AS id, MAX(meta_user_name) AS name, MAX(updated_at) AS last_seen
+        FROM sessions WHERE meta_user_id IS NOT NULL
+        GROUP BY meta_user_id ORDER BY last_seen DESC LIMIT 200
+      `).all().map(row => ({ id: row.id, name: row.name ?? '', lastSeen: Number(row.last_seen) }));
+    },
+
     attachMetaUser(sessionId, metaUser) {
       const user = typeof metaUser === 'string' ? { id: metaUser, name: null } : metaUser;
       database.prepare(`

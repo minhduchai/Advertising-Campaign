@@ -12,6 +12,6 @@
     }
   ],
   "vars": {
-    "APP_SERVER_BASE_URL": "https://advertisingserver.tailac4f15.ts.net"
+    "APP_SERVER_BASE_URL": "https://setads.click"
   }
 }

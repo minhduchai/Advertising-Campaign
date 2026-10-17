@@ -10,7 +10,7 @@ export function isToolAudienceTemplateId(value) {
   return String(value ?? '').startsWith(TOOL_AUDIENCE_TEMPLATE_PREFIX);
 }
 
-export function toolAudienceTemplateCompatibility(template, adAccountId, customAudiences = []) {
+export function toolAudienceTemplateCompatibility(template, adAccountId, customAudiences = [], resourcesLoaded = true) {
   const content = template?.content ?? template ?? {};
   const customAudienceIds = [
     ...(content.includedCustomAudienceIds ?? []),
@@ -29,6 +29,15 @@ export function toolAudienceTemplateCompatibility(template, adAccountId, customA
   const sourceAdAccountId = String(content.sourceAdAccountId ?? '');
   const currentAdAccountId = String(adAccountId ?? '');
   const uniqueIds = [...new Set(customAudienceIds.map(String))];
+  if (!resourcesLoaded) {
+    return {
+      compatible: true,
+      reason: '',
+      warning: `Đã bỏ qua ${uniqueIds.length} Custom Audience vì chưa tải được tài nguyên tài khoản.`,
+      allowedCustomAudienceIds: [],
+      skippedCustomAudienceIds: uniqueIds
+    };
+  }
   const availableIds = new Set(customAudiences.map((audience) => String(audience?.id ?? '')));
   const allowedIds = uniqueIds.filter((id) => availableIds.has(id));
   const missingIds = uniqueIds.filter((id) => !availableIds.has(id));

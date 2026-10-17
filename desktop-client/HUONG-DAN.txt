@@ -1,8 +1,7 @@
 LG CAMPAIGN — BẢN KHÁCH HÀNG WINDOWS 1.0.0
 
 1. Giải nén toàn bộ ZIP vào một thư mục trên máy.
-2. Kết nối Internet. Với địa chỉ server hiện tại, quản trị viên cần cấp quyền
-   truy cập Tailscale cho máy khách nếu chưa có kết nối.
+2. Kết nối Internet. Ứng dụng dùng https://setads.click/.
 3. Mở LG-Campaign.exe. Cần Microsoft Edge và .NET Framework 4.x trên Windows.
 4. Kết nối Meta bằng tài khoản đã được cấp quyền với Page/tài khoản quảng cáo.
 5. Có thể tạo shortcut LG-Campaign.exe trên Desktop để mở nhanh.
@@ -11,7 +10,7 @@ LG CAMPAIGN — BẢN KHÁCH HÀNG WINDOWS 1.0.0
 Meta được xử lý trên server; máy khách cần mạng trong khi sử dụng.
 Các cập nhật giao diện trên server sẽ xuất hiện khi tải lại ứng dụng.
 
-Nếu không kết nối được: kiểm tra Internet/Tailscale hoặc liên hệ quản trị viên.
+Nếu không kết nối được: kiểm tra Internet hoặc liên hệ quản trị viên.
 Nếu chưa thấy logo mới: nhấn Ctrl+F5 trong cửa sổ ứng dụng.
 Đăng xuất Meta trong ứng dụng khi dùng máy chung.
 

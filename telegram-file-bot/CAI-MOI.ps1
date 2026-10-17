@@ -9,7 +9,7 @@ try {
     & docker info --format '{{.OSType}}'
     if ($LASTEXITCODE -ne 0) { throw 'Mo Docker Desktop va cho Engine running, sau do thu lai.' }
     New-Item -ItemType Directory -Path $targetRoot -Force | Out-Null
-    $files = @('bot.py','telegram_api.py','telegram_app_upload.py','path_guard.py','requirements.txt','run-bot.cmd','CHAY-AN.vbs','.env.example','docker.env.example','HUONG-DAN.txt','CAI-LAI-WINDOWS.txt')
+    $files = @('bot.py','telegram_api.py','telegram_app_upload.py','path_guard.py','file_search.py','requirements.txt','run-bot.cmd','CHAY-AN.vbs','.env.example','docker.env.example','HUONG-DAN.txt','CAI-LAI-WINDOWS.txt')
     foreach ($name in $files) {
         $source = Join-Path $PSScriptRoot $name
         $target = Join-Path $targetRoot $name
@@ -36,7 +36,7 @@ try {
     }
     & $python -m pip install -r (Join-Path $targetRoot 'requirements.txt')
     if ($LASTEXITCODE -ne 0) { throw 'Cai thu vien that bai.' }
-    & $python -m py_compile (Join-Path $targetRoot 'bot.py') (Join-Path $targetRoot 'telegram_api.py') (Join-Path $targetRoot 'telegram_app_upload.py') (Join-Path $targetRoot 'path_guard.py')
+    & $python -m py_compile (Join-Path $targetRoot 'bot.py') (Join-Path $targetRoot 'telegram_api.py') (Join-Path $targetRoot 'telegram_app_upload.py') (Join-Path $targetRoot 'path_guard.py') (Join-Path $targetRoot 'file_search.py')
     if ($LASTEXITCODE -ne 0) { throw 'Kiem tra ma Python that bai.' }
     $existing = & docker ps -a --filter 'name=^/telegram-bot-api$' --format '{{.Names}}'
     if ($LASTEXITCODE -ne 0) { throw 'Khong doc duoc danh sach container.' }

@@ -194,13 +194,24 @@ test('routes seeding actions without detaching shared ad creative', () => {
 
 test('applies one Campaign preset across names, audience, Seeding, and every Ad conversation', () => {
   assert.match(appSource, /if \(await handleCampaignPresetClick\(action, clientId, control\)\)/);
+  assert.match(
+    appSource,
+    /if \(action === 'apply-campaign-preset'\)[\s\S]*?const campaignId = campaign\.clientId;[\s\S]*?const adAccountId = campaign\.adAccountId;[\s\S]*?const presetId = control\.dataset\.presetId;[\s\S]*?await ensureAccountResourcesForNode\(campaignId\)[\s\S]*?findNode\(state, campaignId\)[\s\S]*?campaignPresets\(\)\.find\(\(entry\) => entry\.id === presetId\)[\s\S]*?adAccountId !== adAccountId[\s\S]*?applyPresetToCampaign\(currentMatch\.node, currentPreset\)/
+  );
   assert.match(appSource, /function applyPresetToCampaign\(campaign, preset\)[\s\S]*?campaign\.name = content\.campaignName/);
   assert.match(appSource, /\(campaign\.adSets \?\? \[\]\)\.forEach\(\(adSet\) => \{[\s\S]*?adSet\.name = content\.adSetName/);
-  assert.match(appSource, /function campaignPresetAudience\(campaign, content\)[\s\S]*?toolAudienceTemplateCompatibility/);
+  assert.match(appSource, /function campaignPresetAudience\(campaign, content\)[\s\S]*?toolAudienceTemplateCompatibility\([\s\S]*?campaignResources\.loaded/);
   assert.match(appSource, /applyAudienceTemplateToAdSet\(state, adSet\.clientId, audienceResult\.template\)/);
   assert.match(appSource, /\(adSet\.ads \?\? \[\]\)\.forEach\(\(ad\) => applyTemplateToAd\(ad, conversationTemplate\)\)/);
   assert.match(appSource, /applyCampaignSeedingTemplate\(state, campaign\.clientId, seedingTemplate\)/);
   assert.match(appSource, /async function loadResources\(\)[\s\S]*?await Promise\.all\(\[[\s\S]*?loadCampaignPresets\(\)[\s\S]*?\]\)/);
+});
+
+test('does not apply a Campaign preset when account resources are unavailable', () => {
+  assert.match(
+    appSource,
+    /const accountResources = await ensureAccountResourcesForNode\(campaignId\);[\s\S]*?if \(!accountResources\?\.loaded\) \{[\s\S]*?showToast\([^)]*tài nguyên tài khoản[^)]*\)[\s\S]*?return true;[\s\S]*?\}/
+  );
 });
 
 test('updates seeding text in place and commits image replacement only after upload success', () => {

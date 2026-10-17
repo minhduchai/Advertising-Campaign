@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="vi">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quản lý quyền sử dụng</title>
+<h1>Quản lý quyền sử dụng</h1>
+<p><a href="/">Về ứng dụng</a></p>
+<section aria-labelledby="access-pending-title">
+  <h2 id="access-pending-title">Chờ cấp quyền</h2>
+  <p id="access-pending-count" role="status" aria-live="polite"></p>
+  <p>Người đã đăng nhập bằng Meta nhưng chưa có quyền sẽ hiện ở đây. Anh chỉ cần bấm Cho phép. Trang tự cập nhật mỗi 15 giây khi đang mở.</p>
+  <ul id="access-pending"></ul>
+</section>
+<details>
+<summary>Ghi chú tài khoản / cấp quyền thủ công</summary>
+<form id="access-form">
+  <p><label>1. Chọn đúng người đã đăng nhập <select name="metaUserId" required><option value="">Chọn tài khoản</option></select></label></p>
+  <p><label>2. Tên gợi nhớ (không bắt buộc) <input name="label" maxlength="80" placeholder="Ví dụ: Mỹ Thi — Marketing"></label></p>
+  <p><label>3. Link hoặc ID Facebook (để nhận diện) <input name="facebookUrl" maxlength="2048" placeholder="Dán link hồ sơ Facebook hoặc ID"></label></p>
+  <button type="submit" id="access-save">Cấp quyền / Lưu thông tin</button>
+</form>
+<p>Người dùng đăng nhập bằng Meta vào setads.click một lần để xuất hiện tại bước 1 (có thể thấy 404 khi chưa được cấp quyền). Link ở bước 3 do anh ghi chú, không tự xác minh chủ tài khoản hay cấp quyền theo link.</p>
+</details>
+<button type="button" id="access-refresh">Tải lại danh sách</button>
+<p id="access-status" role="status"></p>
+<h2>Tài khoản đã cấp quyền</h2>
+<ul id="access-users"></ul>
+<script src="/access-admin.js" defer></script>
+</html>

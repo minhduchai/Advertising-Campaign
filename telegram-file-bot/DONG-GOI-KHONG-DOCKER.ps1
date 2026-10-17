@@ -18,7 +18,7 @@ Get-ChildItem -LiteralPath $native -File | Where-Object Name -ne 'manifest.json'
 @{ sha256 = $hashes } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $native 'manifest.json') -Encoding Ascii
 
 $files = @('CHUYEN-KHONG-DOCKER.cmd','switch_native.py','native_runtime.py','native-task.ps1',
-           'bot.py','telegram_api.py','telegram_app_upload.py','path_guard.py','HUONG-DAN-KHONG-DOCKER.txt',
+           'bot.py','telegram_api.py','telegram_app_upload.py','path_guard.py','file_search.py','HUONG-DAN-KHONG-DOCKER.txt',
            'requirements.txt','.env.example','docker.env.example','KIEM-TRA-KHONG-DOCKER.cmd','KIEM-TRA-KHONG-DOCKER.ps1')
 $suffix = ''
 if ($KemCauHinh) {
