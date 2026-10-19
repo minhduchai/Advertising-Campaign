@@ -7,13 +7,79 @@ import { join } from 'node:path';
 import { createMetaReadCache } from '../src/meta-read-cache.js';
 import { createMetaClient } from '../src/meta-client.js';
 import { testConfig } from './helpers.js';
-import { decryptToken } from '../src/crypto.js';
+import { decryptToken, encryptToken } from '../src/crypto.js';
 
 async function directoryFor(t) {
   const directory = await mkdtemp(join(tmpdir(), 'meta-cache-test-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   return directory;
 }
+
+test('Page permalink permission denial is shared across posts and workers but isolated by token and Page', async t => {
+  const config = { ...testConfig(), metaReadCacheDirectory: await directoryFor(t) };
+  let reads = 0;
+  const fetchImpl = async input => {
+    const path = new URL(input).pathname;
+    if (path.includes('/ad-')) return Response.json({ creative: { object_story_id: `${path.endsWith('other') ? '222' : '111'}_${path.match(/ad-(\d+)/)?.[1] ?? '900'}` } });
+    if (!path.includes('_')) return Response.json({});
+    reads++;
+    return Response.json({ error: { code: 10, message: 'pages_read_engagement permission required' } }, { status: 400 });
+  };
+  const one = createMetaClient(config, { fetchImpl });
+  const two = createMetaClient(config, { fetchImpl });
+  for (let i = 1; i <= 5; i++) {
+    const publication = await (i % 2 ? one : two).getAdPublication('token-one', `ad-${i}`);
+    assert.equal(publication.permalinkUrl, `https://www.facebook.com/111/posts/${i}`);
+  }
+  assert.equal(reads, 1);
+  await two.getAdPublication('token-two', 'ad-6');
+  await two.getAdPublication('token-one', 'ad-other');
+  assert.equal(reads, 3);
+  const key = createHash('sha256').update(JSON.stringify(['post-permalink-access', 'https://graph.facebook.com/v25.0', 'token-one', '111'])).digest('hex');
+  const path = join(config.metaReadCacheDirectory, `${key}.json`);
+  const expired = JSON.parse(decryptToken(await readFile(path, 'utf8'), config.tokenEncryptionKey));
+  expired.expiresAt = Date.now() - 1;
+  await writeFile(path, encryptToken(JSON.stringify(expired), config.tokenEncryptionKey));
+  await createMetaClient(config, { fetchImpl }).getAdPublication('token-one', 'ad-10');
+  assert.equal(reads, 4, 'permissions are probed again after expiry');
+});
+
+test('successful permission probe never substitutes another Posts permalink', async t => {
+  const config = { ...testConfig(), metaReadCacheDirectory: await directoryFor(t) };
+  let reads = 0;
+  const client = createMetaClient(config, { fetchImpl: async input => {
+    const path = new URL(input).pathname;
+    if (path.includes('/ad-')) return Response.json({ creative: { object_story_id: `111_${path.endsWith('ad-1') ? '1' : '2'}` } });
+    if (new URL(input).searchParams.get('fields') === 'access_token') return Response.json({});
+    reads++;
+    return Response.json({ permalink_url: `https://www.facebook.com/posts/${path.split('_').at(-1)}` });
+  } });
+  assert.equal((await client.getAdPublication('token', 'ad-1')).permalinkUrl, 'https://www.facebook.com/posts/1');
+  assert.equal((await client.getAdPublication('token', 'ad-2')).permalinkUrl, 'https://www.facebook.com/posts/2');
+  assert.equal(reads, 2);
+});
+
+test('recovers permalink reads with a Page token and reuses it for sibling posts', async t => {
+  const config = { ...testConfig(), metaReadCacheDirectory: await directoryFor(t) };
+  let denied = 0, tokenReads = 0;
+  const fetchImpl = async (input, options) => {
+    const url = new URL(input), path = url.pathname;
+    if (path.includes('/ad-')) return Response.json({ creative: { object_story_id: `111_${path.endsWith('ad-1') ? '1' : '2'}` } });
+    if (url.searchParams.get('fields') === 'access_token') { tokenReads++; return Response.json({ access_token: 'page-secret' }); }
+    if (options.headers.authorization !== 'Bearer page-secret') {
+      denied++; return Response.json({ error: { code: 10, message: 'Page permission required' } }, { status: 400 });
+    }
+    return Response.json({ permalink_url: `https://www.facebook.com/reel/${path.split('_').at(-1)}` });
+  };
+  const first = createMetaClient(config, { fetchImpl }), second = createMetaClient(config, { fetchImpl });
+  assert.equal((await first.getAdPublication('token', 'ad-1')).permalinkUrl, 'https://www.facebook.com/reel/1');
+  assert.equal((await second.getAdPublication('token', 'ad-2')).permalinkUrl, 'https://www.facebook.com/reel/2');
+  assert.equal(denied, 0);
+  assert.equal(tokenReads, 1);
+  for (const file of await readdir(config.metaReadCacheDirectory)) {
+    assert.doesNotMatch(await readFile(join(config.metaReadCacheDirectory, file), 'utf8'), /page-secret/);
+  }
+});
 
 test('89 seeding reads across worker instances reuse two paginated resources, isolated by token and Page', async t => {
   const directory = await directoryFor(t);
@@ -164,6 +230,7 @@ test('different Ads sharing a Post reuse its actual permalink across workers', a
   let postReads = 0;
   let adReads = 0;
   const fetchImpl = async url => {
+    if (new URL(url).searchParams.get('fields') === 'access_token') return Response.json({ access_token: 'page-token' });
     if (new URL(url).searchParams.get('fields') === 'permalink_url') {
       postReads++;
       return Response.json({ permalink_url: 'https://www.facebook.com/reel/123' });

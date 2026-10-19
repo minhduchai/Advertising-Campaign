@@ -733,7 +733,7 @@ test('keeps the Post ID and builds a Facebook post link when permalink lookup fa
     postId: '123456789_987654321',
     permalinkUrl: 'https://www.facebook.com/123456789/posts/987654321'
   });
-  assert.equal(requests.length, 2);
+  assert.equal(requests.length, 3);
 });
 
 test('does not mislabel an Instagram permalink as a Facebook post link', async () => {

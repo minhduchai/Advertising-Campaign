@@ -6,6 +6,7 @@ import { createMetaClient } from '../src/meta-client.js';
 import { createR2MediaStore } from '../src/r2-media.js';
 import { prepareRunSeeding, processNextSeedingJob } from '../src/seeding-service.js';
 import { recordError } from '../src/error-journal.js';
+import { seedingCandidates } from './seeding-candidates.js';
 
 const MAX_RUNTIME_MS = 100_000;
 const MAX_JOBS_PER_TICK = 24;
@@ -31,10 +32,7 @@ try {
       AND error_json->>'type' = 'TypeError' AND error_json->>'message' = 'fetch failed'`;
   // Preparation gates each campaign independently; other campaigns may still be creating.
   // Job claims remain atomic if a browser is processing too.
-  const candidates = await sql`SELECT id FROM runs
-    WHERE status IN ('creating', 'retrying_ad', 'seeding', 'completed', 'completed_with_errors')
-      AND created_at >= ${Date.now() - 14 * 86400000}
-    ORDER BY created_at DESC LIMIT 20`;
+  const candidates = await seedingCandidates(sql);
   for (const candidate of candidates) {
     if (processed >= MAX_JOBS_PER_TICK || Date.now() - startedAt >= MAX_RUNTIME_MS) break;
     const run = await db.getRun(candidate.id);
@@ -51,7 +49,8 @@ try {
       if (plan.conflicts.length || plan.invalidTargets.length) continue;
       while (processed < MAX_JOBS_PER_TICK && Date.now() - startedAt < MAX_RUNTIME_MS) {
         const result = await processNextSeedingJob({ runId: run.id,
-          ownerMetaUserId: run.ownerMetaUserId, db, metaClient, mediaStore, token });
+          ownerMetaUserId: run.ownerMetaUserId, db, metaClient, mediaStore, token,
+          deadlineAt: startedAt + MAX_RUNTIME_MS });
         if (!result.job) break;
         processed += 1;
         if (result.job.status !== 'created') failures += 1;

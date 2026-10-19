@@ -52,6 +52,32 @@ const draft = {
 
 const image = () => ({ id: 'media-image', mimeType: 'image/jpeg', name: 'image.jpg', content: Buffer.from('image') });
 
+test('stops queued AdSet creates after the account capacity error and keeps other accounts publishing', async () => {
+  for (const concurrency of [1, 3]) {
+    const full = structuredClone(draft.campaigns[0]);
+    full.adSets = Array.from({ length: 8 }, (_, i) => ({ ...structuredClone(full.adSets[0]),
+      clientId: `full-set-${i}`, ads: [{ ...structuredClone(ad), clientId: `full-ad-${i}` }] }));
+    const other = structuredClone(draft.campaigns[0]);
+    other.clientId = 'other-campaign'; other.adAccountId = 'act_2';
+    const calls = [];
+    const result = await publishDraft({ draft: { campaigns: [full, other] }, concurrency, token: 'fake', runId: 'full-account', getMedia: image,
+      metaClient: { createCampaign: async (_t, account) => `${account}-campaign`,
+        createAdSet: async (_t, account) => {
+          calls.push(account);
+          if (account === 'act_1') throw Object.assign(new Error('Account has reached 10000 ad sets'), {
+            meta: { code: 100, subcode: 1359133, message: 'Account has reached 10000 ad sets', type: 'OAuthException' }
+          });
+          return 'other-set';
+        }, uploadImage: async () => 'hash', createCreative: async () => 'creative', createAd: async () => 'other-ad'
+      } });
+    assert.ok(calls.filter(account => account === 'act_1').length <= concurrency);
+    assert.equal(calls.filter(account => account === 'act_2').length, 1);
+    assert.equal(result.nodes.filter(n => n.type === 'adSet' && n.status === 'failed').length, 8);
+    assert.equal(result.nodes.filter(n => n.type === 'ad' && n.status === 'skipped').length, 8);
+    assert.equal(result.nodes.find(n => n.clientId === 'ad-1').status, 'created');
+  }
+});
+
 test('a real deadline aborts an in-flight campaign write and preserves uncertain state', async () => {
   let calls = 0;
   const client = createMetaClient({ apiVersion: 'v24.0' }, { fetchImpl: async (_url, { signal }) => {

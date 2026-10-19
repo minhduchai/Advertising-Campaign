@@ -3,7 +3,7 @@
   "name": "creative-campaign-workflow",
   "main": "src/index.js",
   "compatibility_date": "2026-08-17",
-  "triggers": { "crons": ["* * * * *"] },
+  "triggers": { "crons": [] },
   "workflows": [
     {
       "name": "creative-campaign-publishing",

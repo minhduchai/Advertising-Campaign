@@ -82,6 +82,7 @@ async function publishDraftWithContext({
   const metaVideoIds = new Map();
   const metaImageHashes = new Map();
   const readyVideos = new Map();
+  const fullAdSetAccounts = new Map();
   let newNodes = 0;
   let bounded = false;
   const canCreateNode = () => newNodes < maxNewNodes && now() < stopStartingAt;
@@ -155,13 +156,20 @@ async function publishDraftWithContext({
           name: adSet.name,
           type: 'adSet',
           deadlineContext,
-          create: async () => (await adopt(adSet.clientId, campaignResult.remoteId, 'adsets', adSet.name))
-            ?? metaClient.createAdSet(
-              token,
-              campaign.adAccountId,
-              buildConversationAdSetParams(campaignResult.remoteId, campaign, adSet),
-              publicationOptions(deadlineContext)
-            )
+          create: async () => {
+            const adopted = await adopt(adSet.clientId, campaignResult.remoteId, 'adsets', adSet.name);
+            if (adopted) return adopted;
+            if (fullAdSetAccounts.has(campaign.adAccountId)) throw fullAdSetAccounts.get(campaign.adAccountId);
+            try {
+              return await metaClient.createAdSet(token, campaign.adAccountId,
+                buildConversationAdSetParams(campaignResult.remoteId, campaign, adSet), publicationOptions(deadlineContext));
+            } catch (error) {
+              if (Number(error.meta?.code) === 100 && Number(error.meta?.subcode) === 1359133) {
+                fullAdSetAccounts.set(campaign.adAccountId, error);
+              }
+              throw error;
+            }
+          }
         }));
         if (!adSetResult) return;
       }

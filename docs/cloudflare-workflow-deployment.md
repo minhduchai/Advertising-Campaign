@@ -32,3 +32,5 @@ Deploy lại server bằng `scripts/deploy-server.ps1`.
 Đặt `WORKFLOW_ENABLED=false` trong environment của service rồi deploy lại server. Không xóa Workflow đang chạy cho tới khi các lượt hiện tại kết thúc.
 
 Hiện production giữ `WORKFLOW_ENABLED=false`; quy trình tạo Ads chạy trực tiếp trên application server. Tunnel `setads.click` đã hoạt động nhưng Worker chưa được bật lại.
+
+Cron bỏ ẩn bình luận hiện do Ubuntu chạy (`scripts/tick-comment-unhide.js` dưới `flock`). Giữ `triggers.crons: []` trong cấu hình Cloudflare để tránh gọi trùng vào route Workflow đang tắt. Khi chuyển scheduler sang Cloudflare, tắt cron Ubuntu tương ứng và kiểm tra route/auth trước khi thêm lịch.

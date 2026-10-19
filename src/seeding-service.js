@@ -1,8 +1,8 @@
 import { isMetaThrottleError } from './meta-client.js';
 import { withErrorContext, setErrorContext, recordError } from './error-journal.js';
 
-const STALE_JOB_MS = 2 * 60_000;
-const DEFAULT_TIMEOUT_MS = 20_000;
+export const STALE_JOB_MS = 5 * 60_000;
+const DEFAULT_TIMEOUT_MS = 60_000;
 const MIN_DELAY_MS = 3_000;
 const DELAY_RANGE_MS = 2_001;
 const MAX_SEEDING_IMAGE_BYTES = 200 * 1024 * 1024;
@@ -82,7 +82,8 @@ async function processNextSeedingJobWithContext({
   loadPageEngagementContext,
   now = Date.now,
   random = Math.random,
-  timeoutMs = DEFAULT_TIMEOUT_MS
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  deadlineAt = Number.POSITIVE_INFINITY
 }) {
   const claimedAt = readNow(now);
   const job = await db.claimNextSeedingJob({
@@ -145,8 +146,14 @@ async function processNextSeedingJobWithContext({
   }
 
   let metaCommentId;
+  const remainingMs = Math.min(timeoutMs, deadlineAt - readNow(now));
+  if (remainingMs <= 0) {
+    const deferredAt = readNow(now);
+    await db.deferSeedingJob({ ownerMetaUserId, runId, jobId: job.id, now: deferredAt, availableAt: deferredAt + 30_000 });
+    return { job: null, retryAfterMs: 30_000 };
+  }
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => controller.abort(), remainingMs);
   timer.unref?.();
   try {
     metaCommentId = await metaClient.createPageComment(

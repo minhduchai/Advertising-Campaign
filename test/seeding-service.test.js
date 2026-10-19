@@ -417,7 +417,32 @@ test('claims exactly one job, posts it, and schedules a three-to-five second del
   assert.equal(fixture.calls.claims.length, 1);
   assert.equal(fixture.calls.comments.length, 1);
   assert.equal(fixture.calls.finishes[0].nextAvailableAt, NOW + result.retryAfterMs);
-  assert.equal(fixture.calls.claims[0].staleBefore, NOW - 120_000);
+  assert.equal(fixture.calls.claims[0].staleBefore, NOW - 300_000);
+});
+
+test('does not dispatch a comment if preparation consumes the worker deadline', async () => {
+  const fixture = processingFixture();
+  fixture.input.deadlineAt = NOW;
+  let deferred;
+  fixture.input.db.deferSeedingJob = async input => { deferred = input; };
+  const result = await processNextSeedingJob(fixture.input);
+  assert.equal(fixture.calls.comments.length, 0);
+  assert.equal(fixture.calls.finishes.length, 0);
+  assert.equal(result.job, null);
+  assert.equal(deferred.jobId, fixture.job.id);
+  assert.equal(deferred.availableAt, NOW + 30000);
+});
+
+test('a comment write is aborted at the worker deadline rather than the longer request timeout', async () => {
+  const fixture = processingFixture({ createPageComment: async (_token, _post, _params, { signal }) =>
+    new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })) });
+  fixture.input.deadlineAt = NOW + 5;
+  const keepAlive = setTimeout(() => {}, 1000);
+  try {
+    const result = await processNextSeedingJob(fixture.input);
+    assert.equal(fixture.calls.comments.length, 1);
+    assert.equal(result.job.status, 'needs_review');
+  } finally { clearTimeout(keepAlive); }
 });
 
 test('uses inclusive random delay boundaries', async (context) => {

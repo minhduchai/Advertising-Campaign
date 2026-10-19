@@ -3,6 +3,8 @@ import { createMetaRateLimiter, createSharedCooldowns } from './meta-rate-limite
 import { setTimeout as sleep } from 'node:timers/promises';
 import { createMetaReadCache } from './meta-read-cache.js';
 import { recordError } from './error-journal.js';
+import { getDefaultAutoSelectFamilyAttemptTimeout, setDefaultAutoSelectFamilyAttemptTimeout } from 'node:net';
+import { recordMetaApiCall } from './meta-api-metrics.js';
 
 const responseDiagnostics = new WeakMap();
 const metaDiagnostic = Symbol('metaDiagnostic');
@@ -34,6 +36,8 @@ const oauthScopes = [
 ];
 
 export function createMetaClient(config, { fetchImpl = fetch, networkRetryDelay = sleep } = {}) {
+  // Node's 250 ms address fallback was timing out IPv4 before trying an unreachable IPv6 route.
+  if (getDefaultAutoSelectFamilyAttemptTimeout() < 1000) setDefaultAutoSelectFamilyAttemptTimeout(1000);
   const rawFetch = fetchImpl;
   const rateLimiter = createMetaRateLimiter({ cooldowns: createSharedCooldowns(config.metaReadCacheDirectory) });
   fetchImpl = async (input, options = {}) => {
@@ -45,18 +49,22 @@ export function createMetaClient(config, { fetchImpl = fetch, networkRetryDelay 
         throw error;
       });
       const startedAt = Date.now();
+      let responseReceived = false;
       const target = new URL(input);
       const secrets = [new Headers(options.headers).get('authorization')?.replace(/^Bearer\s+/i, ''),
         ...[...target.searchParams].filter(([key]) => /token|secret|code/i.test(key)).map(([, value]) => value)];
       try {
         if (options.signal.aborted) throw Object.assign(new DOMException('Request was cancelled before dispatch', 'AbortError'), { notDispatched: true });
         const response = await rawFetch(input, options);
+        responseReceived = true;
+        recordMetaApiCall(config.errorJournalDirectory, { input, options, response, startedAt, attempt: attempt + 1 });
         await rateLimiter.observe(response, input);
         const details = { secrets, method: options.method ?? 'GET', host: target.hostname, path: target.pathname,
           statusCode: response.status, startedAt, headersDurationMs: Date.now() - startedAt, attempt: attempt + 1 };
         responseDiagnostics.set(response, details);
         return response;
       } catch (error) {
+        if (!responseReceived && !error.notDispatched) recordMetaApiCall(config.errorJournalDirectory, { input, options, error, startedAt, attempt: attempt + 1 });
         const readOnly = ['GET', 'HEAD'].includes(String(options.method ?? 'GET').toUpperCase());
         const causes = error?.cause?.errors?.length ? error.cause.errors : [error?.cause];
         const beforeConnect = isPreConnectFailure(error);
@@ -489,11 +497,38 @@ export function createMetaClient(config, { fetchImpl = fetch, networkRetryDelay 
       try {
         const post = await fetchImpl.readCache.load(
           JSON.stringify(['post-permalink', graphBaseUrl, token, postId]), 5 * 60_000,
-          () => requestJson(fetchImpl, `${graphBaseUrl}/${postId}`, {
-            fields: 'permalink_url'
-          }, token, { ...lookupOptions, signal: AbortSignal.any([
-            lookupOptions.signal, AbortSignal.timeout(2500)
-          ]) }),
+          async () => {
+            const read = (readToken = token) => requestJson(fetchImpl, `${graphBaseUrl}/${postId}`, {
+              fields: 'permalink_url'
+            }, readToken, { ...lookupOptions, signal: AbortSignal.any([
+              lookupOptions.signal, AbortSignal.timeout(2500)
+            ]) });
+            // One permission probe per Page/token/5 minutes, shared by web and cron processes.
+            const access = await fetchImpl.readCache.load(
+              JSON.stringify(['post-permalink-access', graphBaseUrl, token, postId.split('_')[0]]), 5 * 60_000,
+              async () => {
+                let pageToken;
+                // A user token can create Ads while only the Page token can read their posts.
+                if (/^\d+$/.test(postId.split('_')[0])) {
+                  try {
+                    const page = await requestJson(fetchImpl, `${graphBaseUrl}/${postId.split('_')[0]}`,
+                      { fields: 'access_token' }, token, { ...lookupOptions,
+                        signal: AbortSignal.any([lookupOptions.signal, AbortSignal.timeout(2500)]) });
+                    pageToken = page.access_token;
+                  } catch (pageError) {
+                    if (![10, 100, 200].includes(Number(pageError.meta?.code))) throw pageError;
+                  }
+                }
+                try { return { postId, post: await read(pageToken), pageToken }; }
+                catch (error) {
+                  if (Number(error.meta?.code) !== 10) throw error;
+                  return { denied: true };
+                }
+              }
+            );
+            if (access.denied) return {};
+            return access.postId === postId ? access.post : read(access.pageToken);
+          },
           { shouldCache: value => Boolean(value?.permalink_url) }
         );
         return {
