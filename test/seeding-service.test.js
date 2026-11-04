@@ -349,7 +349,7 @@ function processingFixture({
   finishError,
   jobs
 } = {}) {
-  const calls = { claims: [], finishes: [], comments: [], contexts: [] };
+  const calls = { claims: [], finishes: [], comments: [], contexts: [], deferrals: [] };
   const fixtureRunId = job?.runId ?? jobs?.[0]?.runId ?? 'run-1';
   const fixturePageId = job?.pageId ?? jobs?.[0]?.pageId ?? 'page-1';
   let claimed = false;
@@ -374,6 +374,10 @@ function processingFixture({
     },
     async listSeedingJobs() {
       return jobs ?? [job];
+    },
+    async deferSeedingJob(input) {
+      calls.deferrals.push(input);
+      Object.assign(job, { status: 'pending', availableAt: input.availableAt, startedAt: null });
     }
   };
   const metaClient = {
@@ -420,29 +424,102 @@ test('claims exactly one job, posts it, and schedules a three-to-five second del
   assert.equal(fixture.calls.claims[0].staleBefore, NOW - 300_000);
 });
 
-test('does not dispatch a comment if preparation consumes the worker deadline', async () => {
-  const fixture = processingFixture();
-  fixture.input.deadlineAt = NOW;
-  let deferred;
-  fixture.input.db.deferSeedingJob = async input => { deferred = input; };
-  const result = await processNextSeedingJob(fixture.input);
-  assert.equal(fixture.calls.comments.length, 0);
-  assert.equal(fixture.calls.finishes.length, 0);
-  assert.equal(result.job, null);
-  assert.equal(deferred.jobId, fixture.job.id);
-  assert.equal(deferred.availableAt, NOW + 30000);
+test('does not claim work without a full request timeout and finalization budget', async (context) => {
+  for (const remainingMs of [-1, 0, 69, 129, 19_999, 20_000, 20_999]) {
+    await context.test(`${remainingMs} ms remaining`, async () => {
+      const fixture = processingFixture();
+      fixture.input.deadlineAt = NOW + remainingMs;
+
+      const result = await processNextSeedingJob(fixture.input);
+
+      assert.equal(fixture.calls.claims.length, 0);
+      assert.equal(fixture.calls.contexts.length, 0);
+      assert.equal(fixture.calls.comments.length, 0);
+      assert.equal(fixture.calls.finishes.length, 0);
+      assert.equal(fixture.calls.deferrals.length, 0);
+      assert.equal(result.job, null);
+      assert.equal(result.retryAfterMs, 30_000);
+    });
+  }
 });
 
-test('a comment write is aborted at the worker deadline rather than the longer request timeout', async () => {
-  const fixture = processingFixture({ createPageComment: async (_token, _post, _params, { signal }) =>
-    new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })) });
-  fixture.input.deadlineAt = NOW + 5;
-  const keepAlive = setTimeout(() => {}, 1000);
-  try {
-    const result = await processNextSeedingJob(fixture.input);
-    assert.equal(fixture.calls.comments.length, 1);
-    assert.equal(result.job.status, 'needs_review');
-  } finally { clearTimeout(keepAlive); }
+test('posts normally with exactly a full timeout and finalization budget remaining', async () => {
+  const fixture = processingFixture();
+  fixture.input.deadlineAt = NOW + fixture.input.timeoutMs + 1_000;
+
+  const result = await processNextSeedingJob(fixture.input);
+
+  assert.equal(result.job.status, 'created');
+  assert.equal(fixture.calls.comments.length, 1);
+  assert.equal(fixture.calls.deferrals.length, 0);
+});
+
+test('defers claimed work if preparation leaves insufficient time without writing or finalizing', async (context) => {
+  for (const elapsedMs of [1_001, 21_931, 22_001]) {
+    await context.test(`${elapsedMs} ms preparation`, async () => {
+      const fixture = processingFixture();
+      let currentTime = NOW;
+      fixture.input.now = () => currentTime;
+      fixture.input.deadlineAt = NOW + 22_000;
+      fixture.input.loadPageEngagementContext = async () => {
+        currentTime += elapsedMs;
+        return { permissionGranted: true,
+          pages: new Map([['page-1', { accessToken: 'page-token', tasks: ['MODERATE'] }]]) };
+      };
+
+      const result = await processNextSeedingJob(fixture.input);
+
+      assert.equal(fixture.calls.claims.length, 1);
+      assert.equal(fixture.calls.comments.length, 0);
+      assert.equal(fixture.calls.finishes.length, 0);
+      assert.equal(result.job, null);
+      assert.equal(result.retryAfterMs, 30_000);
+      assert.equal(fixture.calls.deferrals.length, 1);
+      assert.equal(fixture.calls.deferrals[0].jobId, fixture.job.id);
+      assert.equal(fixture.calls.deferrals[0].availableAt, currentTime + 30_000);
+      assert.equal(fixture.job.status, 'pending');
+    });
+  }
+});
+
+test('uses the default full request budget when timeoutMs is omitted', async () => {
+  const fixture = processingFixture();
+  delete fixture.input.timeoutMs;
+  fixture.input.deadlineAt = NOW + 60_999;
+
+  const result = await processNextSeedingJob(fixture.input);
+
+  assert.equal(result.job, null);
+  assert.equal(fixture.calls.claims.length, 0);
+  assert.equal(fixture.calls.comments.length, 0);
+});
+
+test('a dispatched worker request keeps its full timeout and uncertain timeout needs review', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  let notifyStarted;
+  let requestSignal;
+  const started = new Promise(resolve => { notifyStarted = resolve; });
+  const fixture = processingFixture({
+    createPageComment: async (_token, _post, _params, { signal }) => new Promise((_resolve, reject) => {
+      requestSignal = signal;
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      notifyStarted();
+    })
+  });
+  fixture.input.timeoutMs = 5_000;
+  fixture.input.deadlineAt = NOW + 6_000;
+
+  const processing = processNextSeedingJob(fixture.input);
+  await started;
+  context.mock.timers.tick(4_999);
+  assert.equal(requestSignal.aborted, false);
+  context.mock.timers.tick(1);
+  const result = await processing;
+
+  assert.equal(result.job.status, 'needs_review');
+  assert.equal(fixture.calls.comments.length, 1);
+  assert.equal(fixture.calls.deferrals.length, 0);
+  assert.equal(fixture.calls.finishes.length, 1);
 });
 
 test('uses inclusive random delay boundaries', async (context) => {

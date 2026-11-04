@@ -1,4 +1,5 @@
 import os
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from path_guard import (
     PathOutsideRoot,
     list_directory,
     resolve_user_path,
+    resolve_existing_unicode_path,
     validate_download,
 )
 
@@ -50,6 +52,32 @@ def test_resolve_user_path_rejects_escape_attempts(raw):
 
 def test_resolve_user_path_empty_value_returns_root():
     assert resolve_user_path("", ROOT) == ROOT
+
+
+@pytest.mark.parametrize("stored_form,input_form", [("NFC", "NFD"), ("NFD", "NFC")])
+def test_unicode_path_uses_actual_folder_and_filename(tmp_path, stored_form, input_form):
+    folder = tmp_path / unicodedata.normalize(stored_form, "THÁNG 10") / "ADS" / "TRIET LONG"
+    folder.mkdir(parents=True)
+    source = folder / unicodedata.normalize(stored_form, "VIDEO_1010_RUBI_ĐẸP_T10+T11.mp4")
+    source.write_bytes(b"video")
+    request = unicodedata.normalize(input_form, str(source))
+
+    resolved = resolve_existing_unicode_path(f'"{request}"', str(tmp_path))
+
+    assert resolved == str(source)
+    assert os.path.isfile(resolved)
+
+
+def test_unicode_repair_preserves_missing_filename_for_fuzzy_search(tmp_path):
+    folder = tmp_path / "THÁNG 10" / "ADS" / "TRIET LONG"
+    folder.mkdir(parents=True)
+    request = unicodedata.normalize("NFD", str(folder / "typo.mp4"))
+    assert resolve_existing_unicode_path(request, str(tmp_path)) == str(folder / "typo.mp4")
+
+
+def test_unicode_repair_rejects_path_outside_root(tmp_path):
+    with pytest.raises(PathOutsideRoot):
+        resolve_existing_unicode_path(str(tmp_path.parent / "private.mp4"), str(tmp_path))
 
 
 def test_validate_download_accepts_file_at_limit(tmp_path: Path):

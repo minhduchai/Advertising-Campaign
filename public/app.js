@@ -195,6 +195,7 @@ const seedingRunner = createSeedingRunner({
       state.activityHistory.detailsByRun[runId] = state.activityHistory.detail;
       state.activityHistory.seedingError = null;
     }
+    archiveCompletedRunCampaigns(runId);
     const resultsFocus = captureDrawerFocus(resultsDrawer);
     renderResultsDrawer({ preserveScroll: true });
     renderWorkspaceTreeProgress();
@@ -3762,9 +3763,10 @@ function monitorCompletedRun(runId) {
   const normalizedRunId = String(runId ?? '').trim();
   if (!normalizedRunId || completedRunMonitors.has(normalizedRunId)) return;
   const monitor = (async () => {
-    const deadline = Date.now() + 3 * 60_000;
-    while (Date.now() < deadline) {
+    const deadline = Date.now() + publishRecoveryTimeoutMs;
+    while (Date.now() < deadline && state.publishProgress?.runId === normalizedRunId) {
       await wait(3_000);
+      if (document.hidden) continue;
       try {
         const run = await api.loadRun(normalizedRunId);
         if (state.publishProgress?.runId === normalizedRunId) {
@@ -3778,20 +3780,26 @@ function monitorCompletedRun(runId) {
           state.activityHistory.detailsByRun[normalizedRunId] = run;
           renderHistoryWorkspace();
         }
+        archiveCompletedRunCampaigns(normalizedRunId);
         const summary = run.seeding?.summary ?? {};
         const expected = (run.snapshot?.campaigns ?? []).some(campaign => campaign.seeding?.enabled);
         const ready = !expected || Number(summary.total) > 0;
         const active = Number(summary.pending) > 0 || Number(summary.posting) > 0
           || Number(run.seeding?.waitingPostCount) > 0;
         if (ready && !active) {
-          if (state.publishProgress?.runId === normalizedRunId
-            && archiveCompletedCampaigns(state, state.publishProgress).removed.length > 0) render();
           break;
         }
       } catch {}
     }
   })().finally(() => completedRunMonitors.delete(normalizedRunId));
   completedRunMonitors.set(normalizedRunId, monitor);
+}
+
+function archiveCompletedRunCampaigns(runId) {
+  if (state.publishProgress?.runId !== runId) return;
+  const archived = archiveCompletedCampaigns(state, state.publishProgress);
+  // render() persists the changed draft; ordinary per-comment updates remain incremental.
+  if (archived.removed.length > 0) render();
 }
 
 function isSeedingAction(action) {
@@ -3890,6 +3898,7 @@ async function synchronizeCompletedRunProgress(runId) {
       state.activityHistory.seedingError = null;
     }
     syncLiveActivityHistory(run, { forceRender: true });
+    archiveCompletedRunCampaigns(runId);
     renderResultsDrawer({ preserveScroll: true });
     renderHistoryWorkspace();
     renderWorkspaceTreeProgress();

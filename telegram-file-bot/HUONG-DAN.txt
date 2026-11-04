@@ -47,6 +47,7 @@ GEMINI_MODEL=gemini-3.8-flash
 Không cần Upload Agent và không cần Node.js trên máy công ty.
 
 Bot nhận đường dẫn Windows (\\server\share), macOS (//server/share), smb:// và file://.
+Bot tự đối chiếu chữ tiếng Việt ghép sẵn (NFC) và dấu tách rời (NFD), dùng đúng tên đang lưu trên ổ mạng.
 Nếu đường dẫn sai, bot tự tìm gần đúng. Có thể dùng /find <tên hoặc link file>.
 Tìm tên file dùng công thức 50% độ giống toàn tên, 30% token, 10% mã ngày và 10% tháng chạy.
 Chỉ tìm trong thư mục đích và một cấp thư mục con. Nếu sai tên thư mục, chọn nhánh gần giống trong tối đa hai cấp cần sửa.

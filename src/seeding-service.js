@@ -3,6 +3,7 @@ import { withErrorContext, setErrorContext, recordError } from './error-journal.
 
 export const STALE_JOB_MS = 5 * 60_000;
 const DEFAULT_TIMEOUT_MS = 60_000;
+const FINALIZATION_RESERVE_MS = 1_000;
 const MIN_DELAY_MS = 3_000;
 const DELAY_RANGE_MS = 2_001;
 const MAX_SEEDING_IMAGE_BYTES = 200 * 1024 * 1024;
@@ -86,6 +87,9 @@ async function processNextSeedingJobWithContext({
   deadlineAt = Number.POSITIVE_INFINITY
 }) {
   const claimedAt = readNow(now);
+  if (deadlineAt - claimedAt < timeoutMs + FINALIZATION_RESERVE_MS) {
+    return { job: null, retryAfterMs: 30_000 };
+  }
   const job = await db.claimNextSeedingJob({
     ownerMetaUserId,
     runId,
@@ -146,14 +150,15 @@ async function processNextSeedingJobWithContext({
   }
 
   let metaCommentId;
-  const remainingMs = Math.min(timeoutMs, deadlineAt - readNow(now));
-  if (remainingMs <= 0) {
-    const deferredAt = readNow(now);
+  const deferredAt = readNow(now);
+  // Preparation can consume the budget after claiming. Defer before the write:
+  // aborting a partly sent comment would leave its creation uncertain.
+  if (deadlineAt - deferredAt < timeoutMs + FINALIZATION_RESERVE_MS) {
     await db.deferSeedingJob({ ownerMetaUserId, runId, jobId: job.id, now: deferredAt, availableAt: deferredAt + 30_000 });
     return { job: null, retryAfterMs: 30_000 };
   }
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), remainingMs);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   timer.unref?.();
   try {
     metaCommentId = await metaClient.createPageComment(

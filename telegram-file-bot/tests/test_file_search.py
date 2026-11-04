@@ -1,6 +1,7 @@
 from pathlib import Path
 import threading
 import time
+import unicodedata
 
 import pytest
 
@@ -11,6 +12,33 @@ def test_normalize_shared_path_accepts_wrapped_and_url_encoded_link():
     assert normalize_shared_path("<smb://192.168.1.6/marketing/VIDEO%20FINAL/a.mp4>") == (
         r"\\192.168.1.6\marketing\VIDEO FINAL\a.mp4"
     )
+
+
+@pytest.mark.parametrize("stored_form,input_form", [("NFC", "NFD"), ("NFD", "NFC")])
+def test_search_recovers_unicode_month_above_three_directory_levels(tmp_path, stored_form, input_form):
+    folder = tmp_path / unicodedata.normalize(stored_form, "THÁNG 10") / "ADS" / "TRIET LONG"
+    folder.mkdir(parents=True)
+    source = folder / "VIDEO_1010_RUBI_THANG_THANH_PHUNG_TRIETNACHBUOITHU3_T10+T11.mp4"
+    source.write_bytes(b"video")
+    request = unicodedata.normalize(input_form, str(source))
+
+    matches = find_file_matches(str(tmp_path), request)
+
+    assert matches[0].path == str(source)
+    assert matches[0].score == 1.0
+
+
+def test_unicode_folder_and_filename_typo_work_together(tmp_path):
+    folder = tmp_path / unicodedata.normalize("NFD", "THÁNG 10") / "ADS" / "TRIET LONG"
+    folder.mkdir(parents=True)
+    source = folder / "VIDEO_0910_NGAN_KHOA_DANH_KHOAA_NGHIA_TRIETBIKINI990KNANNHAN_T10+T11.mp4"
+    source.write_bytes(b"video")
+    request = unicodedata.normalize("NFC", str(source)).replace("990K", "99K")
+
+    matches = find_file_matches(str(tmp_path), request)
+
+    assert matches[0].path == str(source)
+    assert matches[0].is_exact_alternative
 
 
 def test_find_similar_files_ignores_accents_separators_and_small_typos(tmp_path: Path):

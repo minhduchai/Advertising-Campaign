@@ -61,7 +61,7 @@ _search_slots = threading.BoundedSemaphore(4)
 
 
 def find_file_matches(root: str, requested_path: str, limit: int = 5, timeout_seconds: float = 3.0) -> list[FileMatch]:
-    from path_guard import resolve_user_path
+    from path_guard import resolve_existing_unicode_path, resolve_user_path
 
     target = resolve_user_path(requested_path, root)
     parent, wanted = ntpath.split(target)
@@ -105,9 +105,14 @@ def find_file_matches(root: str, requested_path: str, limit: int = 5, timeout_se
                 continue
 
     def search() -> None:
+        nonlocal parent, wanted
         try:
-            if os.path.isfile(target):
-                candidates.append(FileMatch(target, 1.0, True))
+            resolved = resolve_existing_unicode_path(target, root, expired)
+            if expired():
+                return
+            parent, wanted = ntpath.split(resolved)
+            if os.path.isfile(resolved):
+                candidates.append(FileMatch(resolved, 1.0, True))
                 return
             folder, missing = parent, []
             while not expired() and not os.path.isdir(folder):

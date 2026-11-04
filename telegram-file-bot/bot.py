@@ -19,7 +19,7 @@ from path_guard import (
     InvalidTargetType,
     PathOutsideRoot,
     list_directory,
-    resolve_user_path,
+    resolve_existing_unicode_path,
     validate_download,
 )
 from telegram_api import TelegramApi
@@ -385,7 +385,7 @@ def handle_update(
             return
         api.answer_callback_query(callback_id)
         try:
-            target = resolve_user_path(action.path, config.file_root)
+            target = resolve_existing_unicode_path(action.path, config.file_root)
             if action.kind == "list":
                 render_directory(int(chat["id"]), target, api, config, browser_store, action.page)
             elif action.kind == "download":
@@ -464,7 +464,7 @@ def handle_update(
                 lines.append("Nhận đường dẫn trực tiếp từ app: sẵn sàng")
             api.send_message(chat_id, "\n".join(lines))
         elif command == "/ls":
-            target = resolve_user_path(argument, config.file_root)
+            target = resolve_existing_unicode_path(argument, config.file_root)
             if browser_store:
                 render_directory(chat_id, target, api, config, browser_store)
             else:
@@ -477,13 +477,13 @@ def handle_update(
             if command == "/find":
                 suggest_files(chat_id, argument, api, config, browser_store)
                 return
-            target = resolve_user_path(argument, config.file_root)
+            target = resolve_existing_unicode_path(argument, config.file_root)
             if transfer_queue:
                 enqueue_file(chat_id, sender, target, api, transfer_queue, "telegram")
             else:
                 send_file(chat_id, target, api, transfer_lock, sender)
         elif ntpath.isabs(normalize_shared_path(text)):
-            target = resolve_user_path(text, config.file_root)
+            target = resolve_existing_unicode_path(text, config.file_root)
             if os.path.isdir(target):
                 if browser_store:
                     render_directory(chat_id, target, api, config, browser_store)

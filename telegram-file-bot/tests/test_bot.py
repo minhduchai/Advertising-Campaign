@@ -1,4 +1,5 @@
 import threading
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -322,6 +323,41 @@ def test_missing_pasted_path_preserves_folder_spaces_and_prioritizes_near_match(
     assert source.name in api.messages[-1][1]
     assert "⭐ Ưu tiên" in api.messages[-1][1]
     assert api.keyboards[-1]["inline_keyboard"][0][0]["text"].startswith("⭐")
+
+
+@pytest.mark.parametrize("stored_form,input_form", [("NFC", "NFD"), ("NFD", "NFC")])
+@pytest.mark.parametrize("command", ["", "/get ", "/ls "])
+def test_unicode_link_downloads_or_lists_real_nas_spelling(tmp_path, stored_form, input_form, command):
+    folder = tmp_path / unicodedata.normalize(stored_form, "THÁNG 10") / "ADS" / "TRIET LONG"
+    folder.mkdir(parents=True)
+    source = folder / "VIDEO_1010_RUBI_THANG_THANH_PHUNG_TRIETNACHBUOITHU3_T10+T11.mp4"
+    source.write_bytes(b"video")
+    target = folder if command == "/ls " else source
+    request = unicodedata.normalize(input_form, str(target))
+    api = FakeApi()
+    config = Config("token", 123, str(tmp_path), "http://127.0.0.1:8081")
+
+    handle_update(make_update(text=command + f'"{request}"'), api, config, threading.Lock(), BrowserStore())
+
+    if command == "/ls ":
+        assert source.name in api.messages[-1][1]
+    else:
+        assert api.documents == [(999, str(source))]
+
+
+def test_unicode_download_button_preserves_actual_decomposed_path(tmp_path):
+    folder = tmp_path / unicodedata.normalize("NFD", "THÁNG 10")
+    folder.mkdir()
+    source = folder / "video.mp4"
+    source.write_bytes(b"video")
+    api = FakeApi()
+    store = BrowserStore()
+    token = store.add("download", unicodedata.normalize("NFC", str(source)))
+    config = Config("token", 123, str(tmp_path), "http://127.0.0.1:8081")
+
+    handle_update(make_callback(f"browse:{token}"), api, config, threading.Lock(), store)
+
+    assert api.documents == [(999, str(source))]
 
 
 def test_pasting_full_file_path_sends_file(tmp_path: Path):

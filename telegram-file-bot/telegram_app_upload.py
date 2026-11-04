@@ -263,13 +263,13 @@ class TelegramPathJobWorker:
             logging.warning("Không thể báo tiến độ job về ứng dụng", exc_info=True)
 
     def run_once(self) -> bool:
-        from path_guard import resolve_user_path
+        from path_guard import resolve_existing_unicode_path
 
         job = self.claim()
         if not job:
             return False
         try:
-            path = resolve_user_path(job["path"], self._file_root)
+            path = resolve_existing_unicode_path(job["path"], self._file_root)
             self._uploader.upload(
                 path,
                 job["code"],

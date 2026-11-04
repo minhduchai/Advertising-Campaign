@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ntpath
 import os
+import unicodedata
 
 from file_search import normalize_shared_path
 
@@ -43,6 +44,48 @@ def resolve_user_path(raw_path: str, root: str) -> str:
     if candidate_case != root_case and not candidate_case.startswith(root_case + "\\"):
         raise PathOutsideRoot("Đường dẫn nằm ngoài ổ marketing.")
     return candidate
+
+
+def resolve_existing_unicode_path(raw_path: str, root: str, expired=lambda: False) -> str:
+    target = resolve_user_path(raw_path, root)
+    if expired() or os.path.exists(target):
+        return target
+    composed = unicodedata.normalize("NFC", target)
+    if expired():
+        return target
+    if composed != target and os.path.exists(composed):
+        return resolve_user_path(composed, root)
+
+    # NFC và NFD nhìn giống nhau nhưng NAS có thể lưu thành hai tên khác nhau.
+    folder, missing = target, []
+    root_case = ntpath.normcase(ntpath.normpath(root))
+    while not expired() and not os.path.isdir(folder):
+        ancestor, part = ntpath.split(folder)
+        ancestor_case = ntpath.normcase(ancestor)
+        if not part or ancestor == folder or (ancestor_case != root_case and not ancestor_case.startswith(root_case + "\\")):
+            return target
+        missing.insert(0, part)
+        folder = ancestor
+    for index, part in enumerate(missing):
+        if expired():
+            return target
+        candidate = ntpath.join(folder, part)
+        if os.path.exists(candidate):
+            folder = candidate
+            continue
+        key = unicodedata.normalize("NFC", part).casefold()
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                if expired():
+                    return target
+                if entry.is_symlink() or getattr(entry, "is_junction", lambda: False)():
+                    continue
+                if unicodedata.normalize("NFC", entry.name).casefold() == key:
+                    folder = entry.path
+                    break
+            else:
+                return ntpath.join(folder, *missing[index:])
+    return folder
 
 
 def validate_download(path: str, max_bytes: int) -> int:
